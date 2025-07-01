@@ -1,0 +1,47 @@
+<?php
+
+
+
+declare(strict_types=1);
+set_time_limit(600);
+error_reporting(E_ALL & ~E_DEPRECATED & ~E_USER_DEPRECATED);
+
+
+require __DIR__ . '/vendor/autoload.php';
+require __DIR__ . '/core/Response.php';
+require __DIR__ . '/core/Logger.php';
+require __DIR__ . '/config/settings.php';
+require __DIR__ . '/controllers/AuthController.php';
+require __DIR__ . '/controllers/CfdiController.php';
+require __DIR__ . '/utils/FiltersHelper.php';
+
+session_start();
+header('Content-Type: application/json');
+header('Access-Control-Allow-Origin: *');
+header('Access-Control-Allow-Methods: POST, GET, OPTIONS');
+header('Access-Control-Allow-Headers: Content-Type');
+if ($_SERVER['REQUEST_METHOD'] === 'OPTIONS') exit(0);
+
+try {
+    $data = json_decode(file_get_contents('php://input'), true);
+    if (json_last_error() !== JSON_ERROR_NONE) Response::json(['error' => 'JSON inválido: '.json_last_error_msg()], 400);
+
+    $action = $data['action'] ?? 'search';
+
+    switch ($action) {
+        case 'login':   AuthController::login($data); break;
+        case 'logout':  AuthController::logout($data); break;
+        case 'status':  AuthController::status($data); break;
+        case 'search':  CfdiController::search($data); break;
+        case 'download':CfdiController::download($data); break;
+        default:        Response::json(['error'=>'Acción no válida: '.$action], 400);
+    }
+} catch (Throwable $e) {
+    Logger::error("Fatal", ['error' => $e->getMessage()]);
+    Response::json([
+        'error' => $e->getMessage(),
+        'trace' => $e->getTraceAsString(),
+        'file' => $e->getFile(),
+        'line' => $e->getLine(),
+    ], 500);
+}

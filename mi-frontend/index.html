@@ -1,0 +1,123 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+    <meta charset="UTF-8">
+    <title>Descarga Masiva CFDI SAT</title>
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css">
+    <link rel="stylesheet" href="mi-custom.css"><!-- Opcional, pon aquí tu propio css -->
+    <style>
+        body { background: #f6f7fb; }
+        .table td, .table th { vertical-align: middle; }
+        .spinner-border { width: 2rem; height: 2rem; }
+        .checkbox-col { width: 32px; }
+        .alert-info { font-size: 1.1em; }
+        #resultados { min-height: 150px; }
+        .table-sticky thead th { position: sticky; top: 0; background: #fff; z-index: 2; }
+        .debug-info { background: #f8f9fa; border: 1px solid #dee2e6; border-radius: 0.375rem; padding: 1rem; margin: 1rem 0; font-family: monospace; font-size: 0.875rem;}
+    </style>
+</head>
+<body class="p-4">
+<div class="container">
+    <h2 class="mb-4 text-primary">Descarga Masiva CFDI SAT <span class="badge bg-info">v4.x</span></h2>
+    <div id="debugPanel" class="debug-info d-none">
+        <h6>Debug Info:</h6>
+        <div id="debugContent"></div>
+    </div>
+    <form id="cfdiForm" class="row g-3 mb-4 shadow p-3 rounded bg-white">
+        <div class="col-md-2">
+            <label for="rfc" class="form-label">RFC</label>
+            <input type="text" class="form-control" id="rfc" required placeholder="RFC del contribuyente"
+                style="text-transform: uppercase;" maxlength="13">
+        </div>
+        <div class="col-md-2">
+            <label for="ciec" class="form-label">CIEC</label>
+            <input type="password" class="form-control" id="ciec" required placeholder="Clave CIEC"
+                maxlength="8">
+        </div>
+        <div class="col-12 mb-2">
+            <button type="button" class="btn btn-success" id="loginSatBtn">Login SAT</button>
+            <button type="button" class="btn btn-danger" id="logoutSatBtn">Logout SAT</button>
+            <button type="button" class="btn btn-secondary" id="toggleDebugBtn">Toggle Debug</button>
+            <span id="statusLogin" class="mx-3"></span>
+        </div>
+        <div class="col-md-2">
+            <label for="tipo" class="form-label">Tipo</label>
+            <select id="tipo" class="form-select">
+                <option value="emitidas">Emitidas</option>
+                <option value="recibidas">Recibidas</option>
+            </select>
+        </div>
+        <div class="col-md-2" id="mesPeriodoGroup" style="display:none;">
+            <label for="mesPeriodo" class="form-label">Mes</label>
+            <select id="mesPeriodo" class="form-select">
+                <option value="">Mes</option>
+                <option value="01">Enero</option>
+                <option value="02">Febrero</option>
+                <option value="03">Marzo</option>
+                <option value="04">Abril</option>
+                <option value="05">Mayo</option>
+                <option value="06">Junio</option>
+                <option value="07">Julio</option>
+                <option value="08">Agosto</option>
+                <option value="09">Septiembre</option>
+                <option value="10">Octubre</option>
+                <option value="11">Noviembre</option>
+                <option value="12">Diciembre</option>
+            </select>
+        </div>
+        <div class="col-md-2" id="anioPeriodoGroup" style="display:none;">
+            <label for="anioPeriodo" class="form-label">Año</label>
+            <input type="number" class="form-control" id="anioPeriodo" placeholder="Año (ej: 2024)">
+        </div>
+        <div class="col-md-2" id="fechaInicioGroup">
+            <label for="fechaInicio" class="form-label">Fecha inicio</label>
+            <input type="date" class="form-control" id="fechaInicio">
+        </div>
+        <div class="col-md-2" id="fechaFinGroup">
+            <label for="fechaFin" class="form-label">Fecha fin</label>
+            <input type="date" class="form-control" id="fechaFin">
+        </div>
+        <div class="col-md-2">
+            <label for="estado" class="form-label">Estado</label>
+            <select id="estado" class="form-select">
+                <option value="">Todos</option>
+                <option value="vigente">Vigente</option>
+                <option value="cancelado">Cancelado</option>
+            </select>
+        </div>
+        <div class="col-md-2">
+            <label for="complemento" class="form-label">Complemento</label>
+            <select id="complemento" class="form-select">
+                <option value="">Todos</option>
+                <option value="nomina">Nómina</option>
+                <option value="pagos">Pagos</option>
+            </select>
+        </div>
+        <div class="col-md-2">
+            <label for="rfcFiltro" class="form-label" id="labelRfcFiltro">RFC Receptor</label>
+            <input type="text" class="form-control" id="rfcFiltro" placeholder="Opcional">
+        </div>
+        <div class="col-md-2">
+            <label for="rfcTerceros" class="form-label">RFC a cuenta de terceros</label>
+            <input type="text" class="form-control" id="rfcTerceros" placeholder="Opcional">
+        </div>
+        <div class="col-12 text-end mt-2">
+            <button type="button" class="btn btn-secondary" id="buscarBtn" disabled>Buscar</button>
+            <button type="button" class="btn btn-info" id="descargarTodosBtn" disabled>Descargar</button>
+            <button type="button" class="btn btn-primary" id="buscarDescargarBtn" disabled>Buscar y descargar</button>
+            <span class="spinner-border spinner-border-sm d-none" role="status" id="spinner"></span>
+        </div>
+    </form>
+    <div id="resultados"></div>
+</div>
+
+<!-- Contenedor para Toasts modernos (notificaciones bonitas) -->
+<div class="position-fixed bottom-0 end-0 p-3" style="z-index: 1100">
+    <div id="toastContainer"></div>
+</div>
+
+<!-- SCRIPTS con rutas reales -->
+<script type="module" src="../js/cfdi-ui.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/js/bootstrap.bundle.min.js"></script>
+</body>
+</html>
