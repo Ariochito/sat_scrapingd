@@ -1,0 +1,12 @@
+# Ignore dependencies directory
+api/vendor/
+# Ignore downloads directory
+api/descarga/
+# Ignore error log
+api/error.log
+# Ignore OS and editor temporary files
+*.swp
+*~
+.DS_Store
+Thumbs.db
+*.tmp
