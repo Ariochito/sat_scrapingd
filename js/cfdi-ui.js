@@ -519,10 +519,12 @@ async function realizarDescarga(uuids, formData) {
         </div>`;
     $("resultados").appendChild(progressDiv);
     try {
-        const response = await downloadCfdi(uuids, formData, downloadType);
+        let response = await downloadCfdi(uuids, formData, downloadType);
         if (response.error) {
-            if (handleSatSessionError(response.error)) return;
-            return showToast('Error en descarga: ' + response.error, "danger");
+            const retry = await handleSatSessionError(response.error, () => downloadCfdi(uuids, formData, downloadType));
+            if (retry === true) return;
+            if (retry) response = retry;
+            if (response.error) return showToast('Error en descarga: ' + response.error, "danger");
         }
         let msg = `<div class="alert alert-success"><strong>Descarga completada</strong><br>Mensaje: ${response.msg}`;
         if (response.descargados) {
@@ -553,21 +555,43 @@ async function realizarDescarga(uuids, formData) {
 // MANEJO DE ERRORES SAT
 // ==============================
 
-function handleSatSessionError(errorMsg) {
-    if (errorMsg && errorMsg.includes(SAT_SESSION_ERROR_MSG)) {
-        satSessionErrorCount++;
-        if (satSessionErrorCount < SAT_SESSION_MAX_RETRIES) {
-            showToast("El SAT tardó en reconocer la sesión. Vuelve a intentar la operación.", "warning");
-            return true;
-        } else {
-            showToast("No fue posible validar la sesión con el SAT tras varios intentos. Por favor, vuelve a iniciar sesión.", "danger");
-            mostrarEstadoSesion(false, "Sesión expirada");
-            satSessionErrorCount = 0;
-            return true;
-        }
+async function handleSatSessionError(errorMsg, retryCallback) {
+    if (!errorMsg || !errorMsg.includes(SAT_SESSION_ERROR_MSG)) {
+        satSessionErrorCount = 0;
+        return false;
     }
-    satSessionErrorCount = 0;
-    return false;
+
+    if (satSessionErrorCount >= SAT_SESSION_MAX_RETRIES) {
+        showToast("No fue posible validar la sesión con el SAT tras varios intentos. Por favor, vuelve a iniciar sesión.", "danger");
+        mostrarEstadoSesion(false, "Sesión expirada");
+        satSessionErrorCount = 0;
+        return true;
+    }
+
+    const rfc = $("rfc").value.trim();
+    const ciec = $("ciec").value.trim();
+    if (rfc && ciec) {
+        satSessionErrorCount++;
+        try {
+            const loginResp = await loginSat(rfc, ciec);
+            if (loginResp.success) {
+                mostrarEstadoSesion(true, loginResp.msg);
+                satSessionErrorCount = 0;
+                if (retryCallback) return await retryCallback();
+                return true;
+            }
+            showToast("Error al reingresar al SAT. Verifica RFC y CIEC.", "warning");
+        } catch (e) {
+            showToast("Error al reingresar al SAT: " + e.message, "warning");
+        }
+        satSessionErrorCount = SAT_SESSION_MAX_RETRIES;
+        return true;
+    }
+
+    showToast("La sesión del SAT expiró. Ingresa nuevamente tus credenciales.", "danger");
+    mostrarEstadoSesion(false, "Sesión expirada");
+    satSessionErrorCount = SAT_SESSION_MAX_RETRIES;
+    return true;
 }
 
 // ==============================
@@ -623,12 +647,16 @@ $("buscarDescargarBtn").onclick = async () => {
     mostrarSpinner(true);
     mostrarBarraBusqueda();
     try {
-        const response = await searchCfdi(data);
+        let response = await searchCfdi(data);
         if (response.error) {
-            if (handleSatSessionError(response.error)) return;
-            $("resultados").innerHTML = `<div class="alert alert-danger">Error en búsqueda: ${response.error}</div>`;
-            showToast(response.error, "danger");
-            return;
+            const retry = await handleSatSessionError(response.error, () => searchCfdi(data));
+            if (retry === true) return;
+            if (retry) response = retry;
+            if (response.error) {
+                $("resultados").innerHTML = `<div class="alert alert-danger">Error en búsqueda: ${response.error}</div>`;
+                showToast(response.error, "danger");
+                return;
+            }
         }
         metadatosCFDI = response.cfdis || [];
         mostrarResultados(response);
