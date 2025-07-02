@@ -9,6 +9,9 @@ const SAT_SESSION_MAX_RETRIES = 3;
 window.debugMode = false; // global for debugLog
 let metadatosCFDI = [];
 let sesionActiva = false;
+let pendientesDescarga = [];
+let lastDownloadFormData = null;
+let lastDownloadType = 'xml';
 // Al cargar, los botones deben estar todos deshabilitados, incluido logout
 $("logoutSatBtn").disabled = true;
 $("buscarBtn").disabled = true;
@@ -490,6 +493,36 @@ async function buscarYDescargarEnChunksPorDias(data, diasPorChunk = 7, reintento
     }
 }
 
+async function reintentarFaltantes() {
+    const btn = document.getElementById('retryMissingBtn');
+    if (btn) btn.disabled = true;
+    while (pendientesDescarga.length > 0) {
+        try {
+            mostrarSpinner(true);
+            showToast(`Reintentando ${pendientesDescarga.length} faltantes...`, 'info');
+            const response = await downloadCfdi(pendientesDescarga, lastDownloadFormData, lastDownloadType);
+            if (response.error) {
+                if (handleSatSessionError(response.error)) return;
+                showToast('Error en descarga: ' + response.error, 'danger');
+                break;
+            }
+            pendientesDescarga = response.noDescargados || [];
+        } catch (e) {
+            showToast(e.message, 'danger');
+            break;
+        } finally {
+            mostrarSpinner(false);
+        }
+    }
+    if (btn) btn.disabled = false;
+    if (pendientesDescarga.length > 0) {
+        btn.textContent = `Reintentar faltantes (${pendientesDescarga.length})`;
+    } else if (btn) {
+        btn.remove();
+        showToast('Todos los faltantes se descargaron', 'success');
+    }
+}
+
 async function descargarSeleccionados() {
     const uuids = obtenerUuidsSeleccionados();
     if (uuids.length === 0) return showToast('Seleccione al menos un CFDI para descargar', "warning");
@@ -503,6 +536,8 @@ async function descargarSeleccionados() {
 async function realizarDescarga(uuids, formData) {
     if (!sesionActiva) return showToast('Primero debe iniciar sesión en el SAT', "warning");
     const downloadType = $("downloadType")?.value || 'xml';
+    lastDownloadFormData = formData;
+    lastDownloadType = downloadType;
     limpiarBarraDeDescarga();
     mostrarSpinner(true);
     const progressDiv = document.createElement('div');
@@ -524,6 +559,7 @@ async function realizarDescarga(uuids, formData) {
             if (handleSatSessionError(response.error)) return;
             return showToast('Error en descarga: ' + response.error, "danger");
         }
+        pendientesDescarga = response.noDescargados || [];
         let msg = `<div class="alert alert-success"><strong>Descarga completada</strong><br>Mensaje: ${response.msg}`;
         if (response.descargados) {
             msg += '<br><strong>Archivos descargados por período:</strong><ul>';
@@ -537,8 +573,17 @@ async function realizarDescarga(uuids, formData) {
             response.avisos.forEach(aviso => { msg += `<li>${aviso}</li>`; });
             msg += '</ul>';
         }
+        if (pendientesDescarga.length > 0) {
+            msg += `<br><strong>Faltantes por descargar:</strong> ${pendientesDescarga.length}`;
+        }
         msg += '</div>';
+        if (pendientesDescarga.length > 0) {
+            msg += `<div class="mt-2"><button class="btn btn-warning btn-sm" id="retryMissingBtn">Reintentar faltantes (${pendientesDescarga.length})</button></div>`;
+        }
         progressDiv.innerHTML = msg;
+        if (pendientesDescarga.length > 0) {
+            document.getElementById('retryMissingBtn').onclick = reintentarFaltantes;
+        }
         showToast("Descarga completada", "success");
     } catch (e) {
         progressDiv.innerHTML = `<div class="alert alert-danger">Error en descarga: ${e.message}</div>`;
