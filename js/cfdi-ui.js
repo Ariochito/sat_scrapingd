@@ -9,6 +9,7 @@ const SAT_SESSION_MAX_RETRIES = 3;
 window.debugMode = false; // global for debugLog
 let metadatosCFDI = [];
 let sesionActiva = false;
+const descargadosSet = new Set();
 // Al cargar, los botones deben estar todos deshabilitados, incluido logout
 $("logoutSatBtn").disabled = true;
 $("buscarBtn").disabled = true;
@@ -433,6 +434,11 @@ async function buscarEnChunksPorDias(formData, diasPorChunk = 7, maxReintentos =
 }
 
 async function descargarEnChunks(uuids, formData, chunkSize = 50) {
+    uuids = uuids.filter(u => !descargadosSet.has(u));
+    if (uuids.length === 0) {
+        showToast('No hay CFDI nuevos para descargar', 'info');
+        return;
+    }
     let total = uuids.length, descargados = 0;
     mostrarBarraDescarga(total, 0);
     for (let i = 0; i < uuids.length; i += chunkSize) {
@@ -502,6 +508,11 @@ async function descargarSeleccionados() {
 
 async function realizarDescarga(uuids, formData) {
     if (!sesionActiva) return showToast('Primero debe iniciar sesión en el SAT', "warning");
+    uuids = uuids.filter(u => !descargadosSet.has(u));
+    if (uuids.length === 0) {
+        showToast('Todos estos CFDI ya fueron descargados', 'info');
+        return;
+    }
     const downloadType = $("downloadType")?.value || 'xml';
     limpiarBarraDeDescarga();
     mostrarSpinner(true);
@@ -526,11 +537,17 @@ async function realizarDescarga(uuids, formData) {
         }
         let msg = `<div class="alert alert-success"><strong>Descarga completada</strong><br>Mensaje: ${response.msg}`;
         if (response.descargados) {
-            msg += '<br><strong>Archivos descargados por período:</strong><ul>';
-            for (const [periodo, archivos] of Object.entries(response.descargados)) {
-                msg += `<li>${periodo}: ${archivos.length} archivos</li>`;
+            const descargados = Array.isArray(response.descargados)
+                ? response.descargados
+                : Object.values(response.descargados).flat();
+            descargados.forEach(uuid => descargadosSet.add(uuid));
+            if (!Array.isArray(response.descargados)) {
+                msg += '<br><strong>Archivos descargados por período:</strong><ul>';
+                for (const [periodo, archivos] of Object.entries(response.descargados)) {
+                    msg += `<li>${periodo}: ${archivos.length} archivos</li>`;
+                }
+                msg += '</ul>';
             }
-            msg += '</ul>';
         }
         if (response.avisos && response.avisos.length > 0) {
             msg += '<br><strong>Avisos:</strong><ul>';
