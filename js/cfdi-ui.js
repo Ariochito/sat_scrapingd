@@ -521,7 +521,7 @@ async function realizarDescarga(uuids, formData) {
     try {
         const response = await downloadCfdi(uuids, formData, downloadType);
         if (response.error) {
-            if (handleSatSessionError(response.error)) return;
+            if (await handleSatSessionError(response.error)) return;
             return showToast('Error en descarga: ' + response.error, "danger");
         }
         let msg = `<div class="alert alert-success"><strong>Descarga completada</strong><br>Mensaje: ${response.msg}`;
@@ -553,11 +553,14 @@ async function realizarDescarga(uuids, formData) {
 // MANEJO DE ERRORES SAT
 // ==============================
 
-function handleSatSessionError(errorMsg) {
+async function handleSatSessionError(errorMsg, retryCb) {
     if (errorMsg && errorMsg.includes(SAT_SESSION_ERROR_MSG)) {
         satSessionErrorCount++;
         if (satSessionErrorCount < SAT_SESSION_MAX_RETRIES) {
-            showToast("El SAT tardó en reconocer la sesión. Vuelve a intentar la operación.", "warning");
+            showToast("El SAT tardó en reconocer la sesión. Reintentando...", "warning");
+            if (typeof retryCb === 'function') {
+                await retryCb();
+            }
             return true;
         } else {
             showToast("No fue posible validar la sesión con el SAT tras varios intentos. Por favor, vuelve a iniciar sesión.", "danger");
@@ -580,16 +583,27 @@ $("buscarBtn").onclick = async () => {
     mostrarSpinner(true);
     mostrarBarraBusqueda();
     try {
-        const response = await searchCfdi(data);
+        let response = await searchCfdi(data);
         if (response.error) {
+            const retry = async () => {
+                const retryResp = await searchCfdi(data);
+                if (retryResp.error) {
+                    $("resultados").innerHTML = `<div class=\"alert alert-danger\">Error en búsqueda: ${retryResp.error}</div>`;
+                    showToast(retryResp.error, "danger");
+                } else {
+                    metadatosCFDI = retryResp.cfdis || [];
+                    mostrarResultados(retryResp);
+                }
+            };
+            if (await handleSatSessionError(response.error, retry)) return;
+            $("resultados").innerHTML = `<div class=\"alert alert-danger\">Error en búsqueda: ${response.error}</div>`;
             showToast(response.error, "danger");
-            $("resultados").innerHTML = `<div class="alert alert-danger">Error: ${response.error}</div>`;
             return;
         }
         metadatosCFDI = response.cfdis || [];
         mostrarResultados(response);
     } catch (e) {
-        $("resultados").innerHTML = `<div class="alert alert-danger">Error: ${e.message}</div>`;
+        $("resultados").innerHTML = `<div class=\"alert alert-danger\">Error: ${e.message}</div>`;
         showToast(e.message, "danger");
     } finally {
         mostrarSpinner(false);
@@ -625,7 +639,7 @@ $("buscarDescargarBtn").onclick = async () => {
     try {
         const response = await searchCfdi(data);
         if (response.error) {
-            if (handleSatSessionError(response.error)) return;
+            if (await handleSatSessionError(response.error)) return;
             $("resultados").innerHTML = `<div class="alert alert-danger">Error en búsqueda: ${response.error}</div>`;
             showToast(response.error, "danger");
             return;
