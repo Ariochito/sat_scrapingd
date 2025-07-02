@@ -381,16 +381,16 @@ async function iniciarDescargaMasiva(uuids, formData, downloadType = 'xml') {
     }
 }
 
-async function descargarSeleccionados() {
+// (Función duplicada comentada para evitar conflicto con la definición principal)
+/* async function descargarSeleccionadosDuplicado() {
     const uuids = obtenerUuidsSeleccionados();
-    if (uuids.length === 0) {
-        showToast('Seleccione al menos un CFDI para descargar', "warning");
-        return;
+    if (uuids.length === 0) return showToast('Seleccione al menos un CFDI para descargar', "warning");
+    if (uuids.length > 50) {
+        await descargarEnChunks(uuids, obtenerDatosFormulario(), 50);
+    } else {
+        await realizarDescarga(uuids, obtenerDatosFormulario());
     }
-    
-    const downloadType = $("downloadType")?.value || 'xml';
-    await iniciarDescargaMasiva(uuids, obtenerDatosFormulario(), downloadType);
-}
+} */
 
 // ==============================
 // UTILIDADES GENERALES
