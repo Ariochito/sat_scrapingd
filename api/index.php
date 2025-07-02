@@ -34,6 +34,7 @@ try {
         case 'status':  AuthController::status($data); break;
         case 'search':  CfdiController::search($data); break;
         case 'download':CfdiController::download($data); break;
+        case 'retryPending': CfdiController::retryPending($data); break;
         default:        Response::json(['error'=>'Acción no válida: '.$action], 400);
     }
 } catch (Throwable $e) {

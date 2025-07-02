@@ -48,3 +48,14 @@ export async function searchCfdi(filters) {
 export async function downloadCfdi(uuids, filters, downloadType) {
     return await makeRequest({ ...filters, action: 'download', selectedUuids: uuids, downloadType });
 }
+
+export async function retryPendingCfdi(pendingUuids, filters, downloadType, options = {}) {
+    const requestData = { 
+        ...filters, 
+        action: 'retryPending', 
+        pendingUuids, 
+        downloadType,
+        ...options
+    };
+    return await makeRequest(requestData);
+}
