@@ -31,11 +31,7 @@ let colaDescarga = {
     }
 };
 
-// Al cargar, los botones deben estar todos deshabilitados, incluido logout
-$("logoutSatBtn").disabled = true;
-$("buscarBtn").disabled = true;
-$("descargarTodosBtn").disabled = true;
-$("buscarDescargarBtn").disabled = true;
+// Los botones se deshabilitarán cuando el DOM esté listo en window.onload
 
 // ==============================
 // SISTEMA DE COLA Y PERSISTENCIA
@@ -654,86 +650,168 @@ function obtenerUuidsSeleccionados() {
 }
 
 // ==============================
-// VALIDACIÓN DE INPUTS
+// VALIDACIÓN DE INPUTS Y EVENT LISTENERS (se inicializan en window.onload)
 // ==============================
 
-$("rfc").addEventListener('input', function () {
-    this.value = this.value.toUpperCase().replace(/[^A-Z0-9]/g, '').substring(0, 13);
-});
-$("ciec").addEventListener('input', function () {
-    if (this.value.length > 8) this.value = this.value.substring(0, 8);
-});
-$("rfcFiltro").addEventListener('input', function () {
-    this.value = this.value.toUpperCase().replace(/[^A-Z0-9]/g, '').substring(0, 13);
-});
-$("rfcTerceros").addEventListener('input', function () {
-    this.value = this.value.toUpperCase().replace(/[^A-Z0-9]/g, '').substring(0, 13);
-});
+function setupEventListeners() {
+    // Validación de inputs
+    $("rfc").addEventListener('input', function () {
+        this.value = this.value.toUpperCase().replace(/[^A-Z0-9]/g, '').substring(0, 13);
+    });
+    $("ciec").addEventListener('input', function () {
+        if (this.value.length > 8) this.value = this.value.substring(0, 8);
+    });
+    $("rfcFiltro").addEventListener('input', function () {
+        this.value = this.value.toUpperCase().replace(/[^A-Z0-9]/g, '').substring(0, 13);
+    });
+    $("rfcTerceros").addEventListener('input', function () {
+        this.value = this.value.toUpperCase().replace(/[^A-Z0-9]/g, '').substring(0, 13);
+    });
 
-$("tipo").addEventListener('change', function () {
-    if (this.value === "recibidas") {
-        $("mesPeriodoGroup").style.display = "";
-        $("anioPeriodoGroup").style.display = "";
-        $("fechaInicioGroup").style.display = "none";
-        $("fechaFinGroup").style.display = "none";
-        $("labelRfcFiltro").textContent = "RFC Emisor";
-    } else {
-        $("mesPeriodoGroup").style.display = "none";
-        $("anioPeriodoGroup").style.display = "none";
-        $("fechaInicioGroup").style.display = "";
-        $("fechaFinGroup").style.display = "";
-        $("labelRfcFiltro").textContent = "RFC Receptor";
-    }
-});
-
-// ==============================
-// SESSION / LOGIN / LOGOUT
-// ==============================
-
-$("toggleDebugBtn").onclick = () => {
-    window.debugMode = !window.debugMode;
-    $("debugPanel").classList.toggle("d-none", !window.debugMode);
-    if (window.debugMode) clearDebug();
-};
-
-$("loginSatBtn").onclick = async () => {
-    const rfc = $("rfc").value.trim();
-    const ciec = $("ciec").value.trim();
-    if (!rfc || !ciec) { showToast('Por favor ingrese RFC y CIEC', "warning"); return; }
-    mostrarSpinner(true);
-    try {
-        const response = await loginSat(rfc, ciec);
-        if (response.success) {
-            mostrarEstadoSesion(true, response.msg);
-            showToast("Login exitoso: " + response.msg, "success");
+    $("tipo").addEventListener('change', function () {
+        if (this.value === "recibidas") {
+            $("mesPeriodoGroup").style.display = "";
+            $("anioPeriodoGroup").style.display = "";
+            $("fechaInicioGroup").style.display = "none";
+            $("fechaFinGroup").style.display = "none";
+            $("labelRfcFiltro").textContent = "RFC Emisor";
         } else {
-            mostrarEstadoSesion(false, 'Error de login');
-            showToast("Error: " + (response.error || 'Login fallido'), "danger");
+            $("mesPeriodoGroup").style.display = "none";
+            $("anioPeriodoGroup").style.display = "none";
+            $("fechaInicioGroup").style.display = "";
+            $("fechaFinGroup").style.display = "";
+            $("labelRfcFiltro").textContent = "RFC Receptor";
         }
-    } catch (e) {
-        mostrarEstadoSesion(false, 'Error de login');
-        showToast("Error: " + e.message, "danger");
-    } finally {
-        mostrarSpinner(false);
-    }
-};
+    });
 
-$("logoutSatBtn").onclick = async () => {
-    const rfc = $("rfc").value.trim();
-    if (!rfc) {
-        showToast("Debes ingresar el RFC antes de cerrar sesión", "warning");
-        return;
-    }
-    try {
-        await logoutSat(rfc);
-        mostrarEstadoSesion(false, 'Sesión cerrada');
-        $("resultados").innerHTML = '';
-        metadatosCFDI = [];
-        showToast("Sesión cerrada", "info");
-    } catch (e) {
-        showToast("Error en logout: " + (e.message || e), "danger");
-    }
-};
+    // Botones principales
+    $("toggleDebugBtn").onclick = () => {
+        window.debugMode = !window.debugMode;
+        $("debugPanel").classList.toggle("d-none", !window.debugMode);
+        if (window.debugMode) clearDebug();
+    };
+
+    $("loginSatBtn").onclick = async () => {
+        const rfc = $("rfc").value.trim();
+        const ciec = $("ciec").value.trim();
+        if (!rfc || !ciec) { showToast('Por favor ingrese RFC y CIEC', "warning"); return; }
+        mostrarSpinner(true);
+        try {
+            const response = await loginSat(rfc, ciec);
+            if (response.success) {
+                mostrarEstadoSesion(true, response.msg);
+                showToast("Login exitoso: " + response.msg, "success");
+            } else {
+                mostrarEstadoSesion(false, 'Error de login');
+                showToast("Error: " + (response.error || 'Login fallido'), "danger");
+            }
+        } catch (e) {
+            mostrarEstadoSesion(false, 'Error de login');
+            showToast("Error: " + e.message, "danger");
+        } finally {
+            mostrarSpinner(false);
+        }
+    };
+
+    $("logoutSatBtn").onclick = async () => {
+        const rfc = $("rfc").value.trim();
+        if (!rfc) {
+            showToast("Debes ingresar el RFC antes de cerrar sesión", "warning");
+            return;
+        }
+        try {
+            await logoutSat(rfc);
+            mostrarEstadoSesion(false, 'Sesión cerrada');
+            $("resultados").innerHTML = '';
+            metadatosCFDI = [];
+            showToast("Sesión cerrada", "info");
+        } catch (e) {
+            showToast("Error en logout: " + (e.message || e), "danger");
+        }
+    };
+
+    $("buscarBtn").onclick = async () => {
+        if (!sesionActiva) return showToast('Primero debe iniciar sesión en el SAT', "warning");
+        const data = obtenerDatosFormulario();
+        mostrarSpinner(true);
+        mostrarBarraBusqueda();
+        try {
+            let response = await searchCfdi(data);
+            if (response.error) {
+                const retry = async () => {
+                    const retryResp = await searchCfdi(data);
+                    if (retryResp.error) {
+                        $("resultados").innerHTML = `<div class=\"alert alert-danger\">Error en búsqueda: ${retryResp.error}</div>`;
+                        showToast(retryResp.error, "danger");
+                    } else {
+                        metadatosCFDI = retryResp.cfdis || [];
+                        mostrarResultados(retryResp);
+                    }
+                };
+                if (await handleSatSessionError(response.error, retry)) return;
+                $("resultados").innerHTML = `<div class=\"alert alert-danger\">Error en búsqueda: ${response.error}</div>`;
+                showToast(response.error, "danger");
+                return;
+            }
+            metadatosCFDI = response.cfdis || [];
+            mostrarResultados(response);
+        } catch (e) {
+            $("resultados").innerHTML = `<div class=\"alert alert-danger\">Error: ${e.message}</div>`;
+            showToast(e.message, "danger");
+        } finally {
+            mostrarSpinner(false);
+        }
+    };
+
+    $("descargarTodosBtn").onclick = async () => {
+        if (!sesionActiva) return showToast('Primero debe iniciar sesión en el SAT', "warning");
+        if (metadatosCFDI.length === 0) return showToast('Primero debe realizar una búsqueda', "warning");
+        if (!confirm(`¿Desea descargar todos los ${metadatosCFDI.length} CFDI encontrados?`)) return;
+        const uuids = metadatosCFDI.map(cfdi => cfdi.uuid);
+        const downloadType = $("downloadType")?.value || 'xml';
+        await iniciarDescargaMasiva(uuids, obtenerDatosFormulario(), downloadType);
+    };
+
+    $("buscarDescargarBtn").onclick = async () => {
+        if (!sesionActiva) return showToast('Primero debe iniciar sesión en el SAT', "warning");
+        const data = obtenerDatosFormulario();
+
+        if (data.tipo === "emitidas" && diasEntreFechas(data.fechaInicio, data.fechaFin) > 7) {
+            await buscarYDescargarEnChunksPorDias(data, 7, 2, 50);
+            return;
+        }
+
+        mostrarSpinner(true);
+        mostrarBarraBusqueda();
+        try {
+            let response = await searchCfdi(data);
+            if (response.error) {
+                const retry = await handleSatSessionError(response.error, () => searchCfdi(data));
+                if (retry === true) return;
+                if (retry) response = retry;
+                if (response.error) {
+                    $("resultados").innerHTML = `<div class="alert alert-danger">Error en búsqueda: ${response.error}</div>`;
+                    showToast(response.error, "danger");
+                    return;
+                }
+
+            }
+            metadatosCFDI = response.cfdis || [];
+            mostrarResultados(response);
+
+            if (metadatosCFDI.length > 0 && confirm(`¿Desea descargar todos los ${metadatosCFDI.length} CFDI encontrados?`)) {
+                const uuids = metadatosCFDI.map(cfdi => cfdi.uuid);
+                const downloadType = $("downloadType")?.value || 'xml';
+                await iniciarDescargaMasiva(uuids, data, downloadType);
+            }
+        } catch (e) {
+            $("resultados").innerHTML = `<div class="alert alert-danger">Error: ${e.message}</div>`;
+            showToast(e.message, "danger");
+        } finally {
+            mostrarSpinner(false);
+        }
+    };
+}
 
 
 // ==============================
@@ -881,15 +959,7 @@ async function reintentarFaltantes() {
     }
 }
 
-async function descargarSeleccionados() {
-    const uuids = obtenerUuidsSeleccionados();
-    if (uuids.length === 0) return showToast('Seleccione al menos un CFDI para descargar', "warning");
-    if (uuids.length > 50) {
-        await descargarEnChunks(uuids, obtenerDatosFormulario(), 50);
-    } else {
-        await realizarDescarga(uuids, obtenerDatosFormulario());
-    }
-}
+
 
 // Función legacy actualizada para usar el nuevo sistema
 async function realizarDescarga(uuids, formData) {
@@ -943,98 +1013,16 @@ async function handleSatSessionError(errorMsg, retryCallback) {
     return true;
 }
 
-// ==============================
-// LISTENERS PRINCIPALES
-// ==============================
-
-$("buscarBtn").onclick = async () => {
-    if (!sesionActiva) return showToast('Primero debe iniciar sesión en el SAT', "warning");
-    const data = obtenerDatosFormulario();
-    mostrarSpinner(true);
-    mostrarBarraBusqueda();
-    try {
-        let response = await searchCfdi(data);
-        if (response.error) {
-            const retry = async () => {
-                const retryResp = await searchCfdi(data);
-                if (retryResp.error) {
-                    $("resultados").innerHTML = `<div class=\"alert alert-danger\">Error en búsqueda: ${retryResp.error}</div>`;
-                    showToast(retryResp.error, "danger");
-                } else {
-                    metadatosCFDI = retryResp.cfdis || [];
-                    mostrarResultados(retryResp);
-                }
-            };
-            if (await handleSatSessionError(response.error, retry)) return;
-            $("resultados").innerHTML = `<div class=\"alert alert-danger\">Error en búsqueda: ${response.error}</div>`;
-            showToast(response.error, "danger");
-            return;
-        }
-        metadatosCFDI = response.cfdis || [];
-        mostrarResultados(response);
-    } catch (e) {
-        $("resultados").innerHTML = `<div class=\"alert alert-danger\">Error: ${e.message}</div>`;
-        showToast(e.message, "danger");
-    } finally {
-        mostrarSpinner(false);
-    }
-};
-
-$("descargarTodosBtn").onclick = async () => {
-    if (!sesionActiva) return showToast('Primero debe iniciar sesión en el SAT', "warning");
-    if (metadatosCFDI.length === 0) return showToast('Primero debe realizar una búsqueda', "warning");
-    if (!confirm(`¿Desea descargar todos los ${metadatosCFDI.length} CFDI encontrados?`)) return;
-    const uuids = metadatosCFDI.map(cfdi => cfdi.uuid);
-    const downloadType = $("downloadType")?.value || 'xml';
-    await iniciarDescargaMasiva(uuids, obtenerDatosFormulario(), downloadType);
-};
-
-
-$("buscarDescargarBtn").onclick = async () => {
-    if (!sesionActiva) return showToast('Primero debe iniciar sesión en el SAT', "warning");
-    const data = obtenerDatosFormulario();
-
-    if (data.tipo === "emitidas" && diasEntreFechas(data.fechaInicio, data.fechaFin) > 7) {
-        await buscarYDescargarEnChunksPorDias(data, 7, 2, 50);
-        return;
-    }
-
-    mostrarSpinner(true);
-    mostrarBarraBusqueda();
-    try {
-        let response = await searchCfdi(data);
-        if (response.error) {
-            const retry = await handleSatSessionError(response.error, () => searchCfdi(data));
-            if (retry === true) return;
-            if (retry) response = retry;
-            if (response.error) {
-                $("resultados").innerHTML = `<div class="alert alert-danger">Error en búsqueda: ${response.error}</div>`;
-                showToast(response.error, "danger");
-                return;
-            }
-
-        }
-        metadatosCFDI = response.cfdis || [];
-        mostrarResultados(response);
-
-        if (metadatosCFDI.length > 0 && confirm(`¿Desea descargar todos los ${metadatosCFDI.length} CFDI encontrados?`)) {
-            const uuids = metadatosCFDI.map(cfdi => cfdi.uuid);
-            const downloadType = $("downloadType")?.value || 'xml';
-            await iniciarDescargaMasiva(uuids, data, downloadType);
-        }
-    } catch (e) {
-        $("resultados").innerHTML = `<div class="alert alert-danger">Error: ${e.message}</div>`;
-        showToast(e.message, "danger");
-    } finally {
-        mostrarSpinner(false);
-    }
-};
+// Los event listeners se configuran en window.onload
 
 // ==============================
 // ESTADO DE SESIÓN AL CARGAR
 // ==============================
 
 window.onload = async () => {
+    // Configurar todos los event listeners
+    setupEventListeners();
+
     // Siempre deshabilita todos los botones al arrancar
     $("logoutSatBtn").disabled = true;
     $("buscarBtn").disabled = true;
