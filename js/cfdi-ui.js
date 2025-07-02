@@ -158,10 +158,15 @@ function mostrarPanelDescarga() {
     `;
     
     // Agregar event listeners
-    $("reanudarDescarga")?.addEventListener('click', reanudarDescarga);
-    $("pausarDescarga")?.addEventListener('click', pausarDescarga);
-    $("configurarDescarga")?.addEventListener('click', mostrarConfiguracionDescarga);
-    $("cancelarDescarga")?.addEventListener('click', cancelarDescarga);
+    const reanudarBtn = document.getElementById("reanudarDescarga");
+    const pausarBtn = document.getElementById("pausarDescarga");
+    const configurarBtn = document.getElementById("configurarDescarga");
+    const cancelarBtn = document.getElementById("cancelarDescarga");
+    
+    if (reanudarBtn) reanudarBtn.addEventListener('click', reanudarDescarga);
+    if (pausarBtn) pausarBtn.addEventListener('click', pausarDescarga);
+    if (configurarBtn) configurarBtn.addEventListener('click', mostrarConfiguracionDescarga);
+    if (cancelarBtn) cancelarBtn.addEventListener('click', cancelarDescarga);
 }
 
 function mostrarConfiguracionDescarga() {
@@ -215,10 +220,15 @@ function mostrarConfiguracionDescarga() {
     modalInstance.show();
     
     modal.querySelector('#guardarConfig').addEventListener('click', () => {
-        colaDescarga.configuracion.chunkSize = parseInt($("configChunkSize").value);
-        colaDescarga.configuracion.maxReintentos = parseInt($("configMaxReintentos").value);
-        colaDescarga.configuracion.delayInicial = parseInt($("configDelay").value);
-        colaDescarga.configuracion.autoRetry = $("configAutoRetry").checked;
+        const chunkSizeInput = document.getElementById("configChunkSize");
+        const maxReintentosInput = document.getElementById("configMaxReintentos");
+        const delayInput = document.getElementById("configDelay");
+        const autoRetryInput = document.getElementById("configAutoRetry");
+        
+        colaDescarga.configuracion.chunkSize = parseInt(chunkSizeInput.value);
+        colaDescarga.configuracion.maxReintentos = parseInt(maxReintentosInput.value);
+        colaDescarga.configuracion.delayInicial = parseInt(delayInput.value);
+        colaDescarga.configuracion.autoRetry = autoRetryInput.checked;
         
         guardarColaEnLocalStorage();
         mostrarPanelDescarga();
@@ -259,7 +269,8 @@ function cancelarDescarga() {
     if (confirm('¿Está seguro de cancelar la descarga? Se perderá el progreso actual.')) {
         colaDescarga.enProceso = false;
         limpiarColaStorage();
-        document.getElementById('panelDescarga')?.remove();
+        const panel = document.getElementById('panelDescarga');
+        if (panel) panel.remove();
         showToast('Descarga cancelada', 'warning');
     }
 }
@@ -332,7 +343,8 @@ async function procesarColaDescarga() {
         showToast(`¡Descarga completada! Se descargaron ${colaDescarga.descargados} archivos.`, 'success');
         setTimeout(() => {
             limpiarColaStorage();
-            document.getElementById('panelDescarga')?.remove();
+            const panel = document.getElementById('panelDescarga');
+            if (panel) panel.remove();
         }, 5000);
     }
 }
@@ -388,7 +400,7 @@ async function descargarSeleccionados() {
         return;
     }
     
-    const downloadType = $("downloadType")?.value || 'xml';
+    const downloadType = document.getElementById("downloadType")?.value || 'xml';
     await iniciarDescargaMasiva(uuids, obtenerDatosFormulario(), downloadType);
 }
 
@@ -735,168 +747,6 @@ $("logoutSatBtn").onclick = async () => {
     }
 };
 
-
-// ==============================
-// FUNCIONES DE BÚSQUEDA Y DESCARGA
-// ==============================
-
-async function buscarEnChunksPorDias(formData, diasPorChunk = 7, maxReintentos = 3) {
-    const fechaInicioOriginal = new Date(formData.fechaInicio);
-    const fechaFinOriginal = new Date(formData.fechaFin);
-    let cfdisTotales = [];
-    let primerResponse = null;
-    let totalDias = diasEntreFechas(formData.fechaInicio, formData.fechaFin);
-    let totalChunks = Math.ceil(totalDias / diasPorChunk);
-
-    mostrarSpinner(true);
-
-    for (let chunk = 0; chunk < totalChunks; chunk++) {
-        let fechaInicioChunk = new Date(fechaInicioOriginal);
-        fechaInicioChunk.setDate(fechaInicioOriginal.getDate() + chunk * diasPorChunk);
-
-        let fechaFinChunk = new Date(fechaInicioChunk);
-        fechaFinChunk.setDate(fechaFinChunk.getDate() + diasPorChunk - 1);
-
-        if (fechaFinChunk > fechaFinOriginal) fechaFinChunk = new Date(fechaFinOriginal);
-
-        let formDataChunk = { ...formData };
-        formDataChunk.fechaInicio = fechaInicioChunk.toISOString().slice(0, 10);
-        formDataChunk.fechaFin = fechaFinChunk.toISOString().slice(0, 10);
-
-        let reintentos = 0;
-        let exitoChunk = false;
-        let response = null;
-
-        mostrarProgresoChunk(chunk + 1, totalChunks, `Buscando CFDIs del ${formDataChunk.fechaInicio} al ${formDataChunk.fechaFin} (Intento ${reintentos + 1})...`);
-        while (reintentos < maxReintentos && !exitoChunk) {
-            try {
-                response = await searchCfdi(formDataChunk);
-                if (response && !response.error) {
-                    if (!primerResponse) primerResponse = response;
-                    cfdisTotales = cfdisTotales.concat(response.cfdis || []);
-                    exitoChunk = true;
-                } else {
-                    if (response.error && response.error.includes("Connection error")) {
-                        showToast(`Chunk ${chunk + 1} falló conexión con el SAT, reintentando...`, "danger");
-                        await sleep(2000);
-                        reintentos++;
-                    } else {
-                        showToast(`Error en chunk ${chunk + 1}: ${response.error}`, "danger");
-                        reintentos = maxReintentos;
-                    }
-                }
-            } catch (e) {
-                showToast(`Error en chunk ${chunk + 1}: ${e.message}`, "danger");
-                await sleep(5000);
-                reintentos++;
-            }
-        }
-
-        if (!exitoChunk) {
-            showToast(`Chunk ${chunk + 1} falló tras ${maxReintentos} intentos. Consulta tu conexión o espera un rato.`, "danger");
-            break;
-        }
-        await sleep(1200);
-    }
-
-    mostrarSpinner(false);
-
-    if (cfdisTotales.length > 0) {
-        mostrarResultados({ ...primerResponse, cfdis: cfdisTotales, total: cfdisTotales.length, mostrados: cfdisTotales.length });
-        showToast("¡Búsqueda masiva completada!", "success");
-    } else {
-        $("resultados").innerHTML = `<div class="alert alert-warning">No se encontraron CFDI en el rango solicitado.</div>`;
-    }
-}
-
-async function descargarEnChunks(uuids, formData, chunkSize = 50) {
-     uuids = uuids.filter(u => !descargadosSet.has(u));
-    if (uuids.length === 0) {
-        showToast('No hay CFDI nuevos para descargar', 'info');
-        return;
-    }
-    let total = uuids.length, descargados = 0;
-    mostrarBarraDescarga(total, 0);
-    for (let i = 0; i < uuids.length; i += chunkSize) {
-        const chunk = uuids.slice(i, i + chunkSize);
-        await realizarDescarga(chunk, formData);
-        descargados += chunk.length;
-        mostrarBarraDescarga(total, descargados);
-        await sleep(1000);
-    }
-    showToast("¡Descarga por lotes finalizada!", "success");
-}
-
-async function buscarYDescargarEnChunksPorDias(data, diasPorChunk = 7, reintentos = 2, chunkSize = 50) {
-    let fechaActual = new Date(data.fechaInicio);
-    const fechaFin = new Date(data.fechaFin);
-    let allCfdis = [];
-
-    mostrarSpinner(true);
-    mostrarBarraBusqueda();
-    try {
-        while (fechaActual <= fechaFin) {
-            let fechaChunkFin = new Date(fechaActual);
-            fechaChunkFin.setDate(fechaChunkFin.getDate() + diasPorChunk - 1);
-            if (fechaChunkFin > fechaFin) fechaChunkFin = new Date(fechaFin);
-
-            const chunkData = { ...data };
-            chunkData.fechaInicio = fechaActual.toISOString().slice(0, 10);
-            chunkData.fechaFin = fechaChunkFin.toISOString().slice(0, 10);
-
-            let response = null;
-            for (let intento = 0; intento < reintentos; intento++) {
-                response = await searchCfdi(chunkData);
-                if (!response.error) break;
-                await sleep(3000);
-            }
-            if (response && response.cfdis && response.cfdis.length) {
-                allCfdis = allCfdis.concat(response.cfdis);
-            }
-            fechaActual.setDate(fechaChunkFin.getDate() + 1);
-        }
-
-        metadatosCFDI = allCfdis;
-        mostrarResultados({ ...data, cfdis: allCfdis, total: allCfdis.length, mostrados: allCfdis.length });
-
-        if (allCfdis.length > 0 && confirm(`¿Desea descargar todos los ${allCfdis.length} CFDI encontrados?`)) {
-            const uuids = allCfdis.map(cfdi => cfdi.uuid);
-            const downloadType = data.downloadType || 'xml';
-            await iniciarDescargaMasiva(uuids, data, downloadType);
-        }
-
-    } catch (e) {
-        $("resultados").innerHTML = `<div class="alert alert-danger">Error: ${e.message}</div>`;
-        showToast(e.message, "danger");
-    } finally {
-        mostrarSpinner(false);
-    }
-}
-
-// Función legacy mantenida para compatibilidad - ahora usa el nuevo sistema
-async function reintentarFaltantes() {
-    if (pendientesDescarga.length > 0) {
-        await iniciarDescargaMasiva(pendientesDescarga, lastDownloadFormData, lastDownloadType);
-        pendientesDescarga = []; // Limpiar la lista legacy
-    }
-}
-
-async function descargarSeleccionados() {
-    const uuids = obtenerUuidsSeleccionados();
-    if (uuids.length === 0) return showToast('Seleccione al menos un CFDI para descargar', "warning");
-    if (uuids.length > 50) {
-        await descargarEnChunks(uuids, obtenerDatosFormulario(), 50);
-    } else {
-        await realizarDescarga(uuids, obtenerDatosFormulario());
-    }
-}
-
-// Función legacy actualizada para usar el nuevo sistema
-async function realizarDescarga(uuids, formData) {
-    const downloadType = $("downloadType")?.value || 'xml';
-    await iniciarDescargaMasiva(uuids, formData, downloadType);
-}
-
 // ==============================
 // MANEJO DE ERRORES SAT
 // ==============================
@@ -958,7 +808,7 @@ $("buscarBtn").onclick = async () => {
             const retry = async () => {
                 const retryResp = await searchCfdi(data);
                 if (retryResp.error) {
-                    $("resultados").innerHTML = `<div class=\"alert alert-danger\">Error en búsqueda: ${retryResp.error}</div>`;
+                    $("resultados").innerHTML = `<div class="alert alert-danger">Error en búsqueda: ${retryResp.error}</div>`;
                     showToast(retryResp.error, "danger");
                 } else {
                     metadatosCFDI = retryResp.cfdis || [];
@@ -966,14 +816,14 @@ $("buscarBtn").onclick = async () => {
                 }
             };
             if (await handleSatSessionError(response.error, retry)) return;
-            $("resultados").innerHTML = `<div class=\"alert alert-danger\">Error en búsqueda: ${response.error}</div>`;
+            $("resultados").innerHTML = `<div class="alert alert-danger">Error en búsqueda: ${response.error}</div>`;
             showToast(response.error, "danger");
             return;
         }
         metadatosCFDI = response.cfdis || [];
         mostrarResultados(response);
     } catch (e) {
-        $("resultados").innerHTML = `<div class=\"alert alert-danger\">Error: ${e.message}</div>`;
+        $("resultados").innerHTML = `<div class="alert alert-danger">Error: ${e.message}</div>`;
         showToast(e.message, "danger");
     } finally {
         mostrarSpinner(false);
@@ -985,19 +835,13 @@ $("descargarTodosBtn").onclick = async () => {
     if (metadatosCFDI.length === 0) return showToast('Primero debe realizar una búsqueda', "warning");
     if (!confirm(`¿Desea descargar todos los ${metadatosCFDI.length} CFDI encontrados?`)) return;
     const uuids = metadatosCFDI.map(cfdi => cfdi.uuid);
-    const downloadType = $("downloadType")?.value || 'xml';
+    const downloadType = document.getElementById("downloadType")?.value || 'xml';
     await iniciarDescargaMasiva(uuids, obtenerDatosFormulario(), downloadType);
 };
-
 
 $("buscarDescargarBtn").onclick = async () => {
     if (!sesionActiva) return showToast('Primero debe iniciar sesión en el SAT', "warning");
     const data = obtenerDatosFormulario();
-
-    if (data.tipo === "emitidas" && diasEntreFechas(data.fechaInicio, data.fechaFin) > 7) {
-        await buscarYDescargarEnChunksPorDias(data, 7, 2, 50);
-        return;
-    }
 
     mostrarSpinner(true);
     mostrarBarraBusqueda();
@@ -1012,14 +856,13 @@ $("buscarDescargarBtn").onclick = async () => {
                 showToast(response.error, "danger");
                 return;
             }
-
         }
         metadatosCFDI = response.cfdis || [];
         mostrarResultados(response);
 
         if (metadatosCFDI.length > 0 && confirm(`¿Desea descargar todos los ${metadatosCFDI.length} CFDI encontrados?`)) {
             const uuids = metadatosCFDI.map(cfdi => cfdi.uuid);
-            const downloadType = $("downloadType")?.value || 'xml';
+            const downloadType = document.getElementById("downloadType")?.value || 'xml';
             await iniciarDescargaMasiva(uuids, data, downloadType);
         }
     } catch (e) {
