@@ -4,6 +4,7 @@ import { loginSat, logoutSat, statusSat, searchCfdi, downloadCfdi } from './cfdi
 
 let satSessionErrorCount = 0;
 const SAT_SESSION_ERROR_MSG = "expected to have the session registered";
+const SAT_SESSION_INACTIVE_MSG = "No hay sesión activa SAT para este RFC";
 const SAT_SESSION_MAX_RETRIES = 3;
 
 window.debugMode = false; // global for debugLog
@@ -554,7 +555,7 @@ async function realizarDescarga(uuids, formData) {
 // ==============================
 
 function handleSatSessionError(errorMsg) {
-    if (errorMsg && errorMsg.includes(SAT_SESSION_ERROR_MSG)) {
+    if (errorMsg && (errorMsg.includes(SAT_SESSION_ERROR_MSG) || errorMsg.includes(SAT_SESSION_INACTIVE_MSG))) {
         satSessionErrorCount++;
         if (satSessionErrorCount < SAT_SESSION_MAX_RETRIES) {
             showToast("El SAT tardó en reconocer la sesión. Vuelve a intentar la operación.", "warning");
