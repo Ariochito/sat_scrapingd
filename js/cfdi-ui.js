@@ -621,8 +621,12 @@ async function realizarDescarga(uuids, formData) {
 
 async function handleSatSessionError(errorMsg, retryCallback) {
     if (errorMsg && (errorMsg.includes(SAT_SESSION_ERROR_MSG) || errorMsg.includes(SAT_SESSION_INACTIVE_MSG))) {
-        satSessionErrorCount = 0;
-        return false;
+        satSessionErrorCount++;
+        if (satSessionErrorCount >= SAT_SESSION_MAX_RETRIES) {
+            mostrarEstadoSesion(false, "Sesión expirada");
+            satSessionErrorCount = 0;
+        }
+        return true;
     }
 
     if (satSessionErrorCount >= SAT_SESSION_MAX_RETRIES) {
