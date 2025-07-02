@@ -30,4 +30,3 @@ php -S localhost:8000 -t .
 ### Frontend
 Accede a `http://localhost:8000/mi-frontend/index.html` con tu navegador.
 
-

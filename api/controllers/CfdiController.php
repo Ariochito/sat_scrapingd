@@ -95,11 +95,19 @@ class CfdiController {
 
     // descarga todos los seleccionados con concurrencia 50 (lo maneja Guzzle)
     $downloadList = new MetadataList($cfdisToDownload);
+   //$descargados = [];
 
     $resultados = $satScraper->resourceDownloader($resourceType, $downloadList)
         ->setConcurrency(30) // Puedes ajustar el número
         ->saveTo(DESCARGA_PATH, true, 0777);
 
+    // $resultados es un array de UUIDs descargados exitosamente
+    //foreach ($resultados as $uuid) {
+    //    $descargados[] = $uuid;
+    //}
+    $descargados = $resultados;
+    $faltantes = array_values(array_diff($selectedUuids, $descargados));
+     
     $descargados = $resultados;
     $faltantes = array_values(array_diff($selectedUuids, $descargados));
 

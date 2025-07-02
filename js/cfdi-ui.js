@@ -4,11 +4,16 @@ import { loginSat, logoutSat, statusSat, searchCfdi, downloadCfdi } from './cfdi
 
 let satSessionErrorCount = 0;
 const SAT_SESSION_ERROR_MSG = "expected to have the session registered";
+const SAT_SESSION_INACTIVE_MSG = "No hay sesión activa SAT para este RFC";
 const SAT_SESSION_MAX_RETRIES = 3;
 
 window.debugMode = false; // global for debugLog
 let metadatosCFDI = [];
 let sesionActiva = false;
+let pendientesDescarga = [];
+let lastDownloadFormData = null;
+let lastDownloadType = 'xml';
+const descargadosSet = new Set();
 // Al cargar, los botones deben estar todos deshabilitados, incluido logout
 $("logoutSatBtn").disabled = true;
 $("buscarBtn").disabled = true;
@@ -433,6 +438,11 @@ async function buscarEnChunksPorDias(formData, diasPorChunk = 7, maxReintentos =
 }
 
 async function descargarEnChunks(uuids, formData, chunkSize = 50) {
+     uuids = uuids.filter(u => !descargadosSet.has(u));
+    if (uuids.length === 0) {
+        showToast('No hay CFDI nuevos para descargar', 'info');
+        return;
+    }
     let total = uuids.length, descargados = 0;
     mostrarBarraDescarga(total, 0);
     for (let i = 0; i < uuids.length; i += chunkSize) {
@@ -490,6 +500,36 @@ async function buscarYDescargarEnChunksPorDias(data, diasPorChunk = 7, reintento
     }
 }
 
+async function reintentarFaltantes() {
+    const btn = document.getElementById('retryMissingBtn');
+    if (btn) btn.disabled = true;
+    while (pendientesDescarga.length > 0) {
+        try {
+            mostrarSpinner(true);
+            showToast(`Reintentando ${pendientesDescarga.length} faltantes...`, 'info');
+            const response = await downloadCfdi(pendientesDescarga, lastDownloadFormData, lastDownloadType);
+            if (response.error) {
+                if (handleSatSessionError(response.error)) return;
+                showToast('Error en descarga: ' + response.error, 'danger');
+                break;
+            }
+            pendientesDescarga = response.noDescargados || [];
+        } catch (e) {
+            showToast(e.message, 'danger');
+            break;
+        } finally {
+            mostrarSpinner(false);
+        }
+    }
+    if (btn) btn.disabled = false;
+    if (pendientesDescarga.length > 0) {
+        btn.textContent = `Reintentar faltantes (${pendientesDescarga.length})`;
+    } else if (btn) {
+        btn.remove();
+        showToast('Todos los faltantes se descargaron', 'success');
+    }
+}
+
 async function descargarSeleccionados() {
     const uuids = obtenerUuidsSeleccionados();
     if (uuids.length === 0) return showToast('Seleccione al menos un CFDI para descargar', "warning");
@@ -502,7 +542,14 @@ async function descargarSeleccionados() {
 
 async function realizarDescarga(uuids, formData) {
     if (!sesionActiva) return showToast('Primero debe iniciar sesión en el SAT', "warning");
+    uuids = uuids.filter(u => !descargadosSet.has(u));
+    if (uuids.length === 0) {
+        showToast('Todos estos CFDI ya fueron descargados', 'info');
+        return;
+    }
     const downloadType = $("downloadType")?.value || 'xml';
+    lastDownloadFormData = formData;
+    lastDownloadType = downloadType;
     limpiarBarraDeDescarga();
     mostrarSpinner(true);
     const progressDiv = document.createElement('div');
@@ -519,16 +566,26 @@ async function realizarDescarga(uuids, formData) {
         </div>`;
     $("resultados").appendChild(progressDiv);
     try {
-        const response = await downloadCfdi(uuids, formData, downloadType);
+        let response = await downloadCfdi(uuids, formData, downloadType);
         if (response.error) {
-            if (handleSatSessionError(response.error)) return;
-            return showToast('Error en descarga: ' + response.error, "danger");
+            const retry = await handleSatSessionError(response.error, () => downloadCfdi(uuids, formData, downloadType));
+            if (retry === true) return;
+            if (retry) response = retry;
+            if (response.error) return showToast('Error en descarga: ' + response.error, "danger");
         }
+        pendientesDescarga = response.noDescargados || [];
         let msg = `<div class="alert alert-success"><strong>Descarga completada</strong><br>Mensaje: ${response.msg}`;
         if (response.descargados) {
-            msg += '<br><strong>Archivos descargados por período:</strong><ul>';
-            for (const [periodo, archivos] of Object.entries(response.descargados)) {
-                msg += `<li>${periodo}: ${archivos.length} archivos</li>`;
+           const descargados = Array.isArray(response.descargados)
+                ? response.descargados
+                : Object.values(response.descargados).flat();
+            descargados.forEach(uuid => descargadosSet.add(uuid));
+            if (!Array.isArray(response.descargados)) {
+                msg += '<br><strong>Archivos descargados por período:</strong><ul>';
+                for (const [periodo, archivos] of Object.entries(response.descargados)) {
+                    msg += `<li>${periodo}: ${archivos.length} archivos</li>`;
+                }
+                
             }
             msg += '</ul>';
         }
@@ -537,8 +594,17 @@ async function realizarDescarga(uuids, formData) {
             response.avisos.forEach(aviso => { msg += `<li>${aviso}</li>`; });
             msg += '</ul>';
         }
+        if (pendientesDescarga.length > 0) {
+            msg += `<br><strong>Faltantes por descargar:</strong> ${pendientesDescarga.length}`;
+        }
         msg += '</div>';
+         if (pendientesDescarga.length > 0) {
+            msg += `<div class="mt-2"><button class="btn btn-warning btn-sm" id="retryMissingBtn">Reintentar faltantes (${pendientesDescarga.length})</button></div>`;
+        }
         progressDiv.innerHTML = msg;
+        if (pendientesDescarga.length > 0) {
+            document.getElementById('retryMissingBtn').onclick = reintentarFaltantes;
+        }
         showToast("Descarga completada", "success");
     } catch (e) {
         progressDiv.innerHTML = `<div class="alert alert-danger">Error en descarga: ${e.message}</div>`;
@@ -553,21 +619,42 @@ async function realizarDescarga(uuids, formData) {
 // MANEJO DE ERRORES SAT
 // ==============================
 
-function handleSatSessionError(errorMsg) {
-    if (errorMsg && errorMsg.includes(SAT_SESSION_ERROR_MSG)) {
-        satSessionErrorCount++;
-        if (satSessionErrorCount < SAT_SESSION_MAX_RETRIES) {
-            showToast("El SAT tardó en reconocer la sesión. Vuelve a intentar la operación.", "warning");
-            return true;
-        } else {
-            showToast("No fue posible validar la sesión con el SAT tras varios intentos. Por favor, vuelve a iniciar sesión.", "danger");
-            mostrarEstadoSesion(false, "Sesión expirada");
-            satSessionErrorCount = 0;
-            return true;
-        }
+async function handleSatSessionError(errorMsg, retryCallback) {
+    if (errorMsg && (errorMsg.includes(SAT_SESSION_ERROR_MSG) || errorMsg.includes(SAT_SESSION_INACTIVE_MSG))) {
+        satSessionErrorCount = 0;
+        return false;
     }
-    satSessionErrorCount = 0;
-    return false;
+
+    if (satSessionErrorCount >= SAT_SESSION_MAX_RETRIES) {
+        showToast("No fue posible validar la sesión con el SAT tras varios intentos. Por favor, vuelve a iniciar sesión.", "danger");
+        mostrarEstadoSesion(false, "Sesión expirada");
+        satSessionErrorCount = 0;
+        return true;
+    }
+
+    const rfc = $("rfc").value.trim();
+    const ciec = $("ciec").value.trim();
+    if (rfc && ciec) {
+        satSessionErrorCount++;
+        try {
+            const loginResp = await loginSat(rfc, ciec);
+            if (loginResp.success) {
+                mostrarEstadoSesion(true, loginResp.msg);
+                satSessionErrorCount = 0;
+                if (retryCallback) return await retryCallback();
+                return true;
+            }
+            showToast("Error al reingresar al SAT. Verifica RFC y CIEC.", "warning");
+        } catch (e) {
+            showToast("Error al reingresar al SAT: " + e.message, "warning");
+        }
+         satSessionErrorCount = SAT_SESSION_MAX_RETRIES;
+        return true;
+    }
+    showToast("La sesión del SAT expiró. Ingresa nuevamente tus credenciales.", "danger");
+    mostrarEstadoSesion(false, "Sesión expirada");
+    satSessionErrorCount = SAT_SESSION_MAX_RETRIES;
+    return true;
 }
 
 // ==============================
@@ -580,16 +667,27 @@ $("buscarBtn").onclick = async () => {
     mostrarSpinner(true);
     mostrarBarraBusqueda();
     try {
-        const response = await searchCfdi(data);
+        let response = await searchCfdi(data);
         if (response.error) {
+            const retry = async () => {
+                const retryResp = await searchCfdi(data);
+                if (retryResp.error) {
+                    $("resultados").innerHTML = `<div class=\"alert alert-danger\">Error en búsqueda: ${retryResp.error}</div>`;
+                    showToast(retryResp.error, "danger");
+                } else {
+                    metadatosCFDI = retryResp.cfdis || [];
+                    mostrarResultados(retryResp);
+                }
+            };
+            if (await handleSatSessionError(response.error, retry)) return;
+            $("resultados").innerHTML = `<div class=\"alert alert-danger\">Error en búsqueda: ${response.error}</div>`;
             showToast(response.error, "danger");
-            $("resultados").innerHTML = `<div class="alert alert-danger">Error: ${response.error}</div>`;
             return;
         }
         metadatosCFDI = response.cfdis || [];
         mostrarResultados(response);
     } catch (e) {
-        $("resultados").innerHTML = `<div class="alert alert-danger">Error: ${e.message}</div>`;
+        $("resultados").innerHTML = `<div class=\"alert alert-danger\">Error: ${e.message}</div>`;
         showToast(e.message, "danger");
     } finally {
         mostrarSpinner(false);
@@ -623,12 +721,17 @@ $("buscarDescargarBtn").onclick = async () => {
     mostrarSpinner(true);
     mostrarBarraBusqueda();
     try {
-        const response = await searchCfdi(data);
+        let response = await searchCfdi(data);
         if (response.error) {
-            if (handleSatSessionError(response.error)) return;
-            $("resultados").innerHTML = `<div class="alert alert-danger">Error en búsqueda: ${response.error}</div>`;
-            showToast(response.error, "danger");
-            return;
+            const retry = await handleSatSessionError(response.error, () => searchCfdi(data));
+            if (retry === true) return;
+            if (retry) response = retry;
+            if (response.error) {
+                $("resultados").innerHTML = `<div class="alert alert-danger">Error en búsqueda: ${response.error}</div>`;
+                showToast(response.error, "danger");
+                return;
+            }
+
         }
         metadatosCFDI = response.cfdis || [];
         mostrarResultados(response);
