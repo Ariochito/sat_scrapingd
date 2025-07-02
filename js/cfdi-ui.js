@@ -1,6 +1,6 @@
 // cfdi-ui.js
 import { $, mostrarSpinner, debugLog, clearDebug, showToast } from './core.js';
-import { loginSat, logoutSat, statusSat, searchCfdi, downloadCfdi } from './cfdi-api.js';
+import { loginSat, logoutSat, statusSat, searchCfdi, downloadCfdi, retryPendingCfdi } from './cfdi-api.js';
 
 let satSessionErrorCount = 0;
 const SAT_SESSION_ERROR_MSG = "expected to have the session registered";
@@ -14,11 +14,383 @@ let pendientesDescarga = [];
 let lastDownloadFormData = null;
 let lastDownloadType = 'xml';
 const descargadosSet = new Set();
+
+// Nuevo sistema de cola persistente
+let colaDescarga = {
+    total: 0,
+    descargados: 0,
+    pendientes: [],
+    enProceso: false,
+    intentos: 0,
+    maxIntentos: 5,
+    configuracion: {
+        chunkSize: 30,
+        maxReintentos: 5,
+        delayInicial: 2000,
+        autoRetry: true
+    }
+};
+
 // Al cargar, los botones deben estar todos deshabilitados, incluido logout
 $("logoutSatBtn").disabled = true;
 $("buscarBtn").disabled = true;
 $("descargarTodosBtn").disabled = true;
 $("buscarDescargarBtn").disabled = true;
+
+// ==============================
+// SISTEMA DE COLA Y PERSISTENCIA
+// ==============================
+
+function guardarColaEnLocalStorage() {
+    try {
+        localStorage.setItem('cfdi_cola_descarga', JSON.stringify(colaDescarga));
+    } catch (e) {
+        console.warn('No se pudo guardar la cola en localStorage:', e);
+    }
+}
+
+function cargarColaDeLocalStorage() {
+    try {
+        const colaGuardada = localStorage.getItem('cfdi_cola_descarga');
+        if (colaGuardada) {
+            const colaData = JSON.parse(colaGuardada);
+            // Solo restaurar si hay pendientes reales
+            if (colaData.pendientes && colaData.pendientes.length > 0) {
+                colaDescarga = { ...colaDescarga, ...colaData };
+                mostrarPanelDescarga();
+                return true;
+            }
+        }
+    } catch (e) {
+        console.warn('Error al cargar cola de localStorage:', e);
+    }
+    return false;
+}
+
+function limpiarColaStorage() {
+    localStorage.removeItem('cfdi_cola_descarga');
+    colaDescarga = {
+        total: 0,
+        descargados: 0,
+        pendientes: [],
+        enProceso: false,
+        intentos: 0,
+        maxIntentos: 5,
+        configuracion: {
+            chunkSize: 30,
+            maxReintentos: 5,
+            delayInicial: 2000,
+            autoRetry: true
+        }
+    };
+}
+
+// ==============================
+// PANEL DE CONTROL DE DESCARGA
+// ==============================
+
+function mostrarPanelDescarga() {
+    let panel = document.getElementById('panelDescarga');
+    if (!panel) {
+        panel = document.createElement('div');
+        panel.id = 'panelDescarga';
+        panel.className = 'card mt-3 border-primary';
+        $("resultados").appendChild(panel);
+    }
+    
+    const porcentaje = colaDescarga.total > 0 ? Math.round((colaDescarga.descargados / colaDescarga.total) * 100) : 0;
+    const estado = colaDescarga.enProceso ? 'Descargando...' : 
+                  colaDescarga.pendientes.length === 0 ? 'Completado' : 'Pausado';
+    
+    panel.innerHTML = `
+        <div class="card-header bg-primary text-white">
+            <h6 class="mb-0">
+                <i class="fas fa-download"></i> Control de Descarga Masiva
+                <span class="badge bg-light text-dark ms-2">${estado}</span>
+            </h6>
+        </div>
+        <div class="card-body">
+            <div class="row mb-3">
+                <div class="col-md-8">
+                    <div class="progress" style="height: 25px;">
+                        <div class="progress-bar progress-bar-striped ${colaDescarga.enProceso ? 'progress-bar-animated' : ''}" 
+                             style="width: ${porcentaje}%">
+                            ${colaDescarga.descargados} / ${colaDescarga.total} (${porcentaje}%)
+                        </div>
+                    </div>
+                    <small class="text-muted">
+                        Pendientes: ${colaDescarga.pendientes.length} | 
+                        Intentos: ${colaDescarga.intentos}/${colaDescarga.maxIntentos}
+                    </small>
+                </div>
+                <div class="col-md-4 text-end">
+                    ${colaDescarga.pendientes.length > 0 ? `
+                        <button class="btn btn-sm btn-success me-1" id="reanudarDescarga" 
+                                ${colaDescarga.enProceso ? 'disabled' : ''}>
+                            <i class="fas fa-play"></i> ${colaDescarga.enProceso ? 'Procesando...' : 'Reanudar'}
+                        </button>
+                        <button class="btn btn-sm btn-warning me-1" id="pausarDescarga"
+                                ${!colaDescarga.enProceso ? 'disabled' : ''}>
+                            <i class="fas fa-pause"></i> Pausar
+                        </button>
+                    ` : ''}
+                    <button class="btn btn-sm btn-secondary" id="configurarDescarga">
+                        <i class="fas fa-cog"></i> Config
+                    </button>
+                    <button class="btn btn-sm btn-danger" id="cancelarDescarga">
+                        <i class="fas fa-times"></i> Cancelar
+                    </button>
+                </div>
+            </div>
+            
+            ${colaDescarga.pendientes.length > 0 ? `
+                <div class="alert alert-info mb-2">
+                    <strong>Archivos pendientes:</strong> ${colaDescarga.pendientes.length} CFDIs por descargar
+                    ${colaDescarga.configuracion.autoRetry ? '<br><i class="fas fa-sync"></i> Reintentos automáticos activados' : ''}
+                </div>
+            ` : colaDescarga.descargados > 0 ? `
+                <div class="alert alert-success mb-2">
+                    <i class="fas fa-check"></i> <strong>¡Descarga completada!</strong> 
+                    Se descargaron ${colaDescarga.descargados} archivos correctamente.
+                </div>
+            ` : ''}
+        </div>
+    `;
+    
+    // Agregar event listeners
+    $("reanudarDescarga")?.addEventListener('click', reanudarDescarga);
+    $("pausarDescarga")?.addEventListener('click', pausarDescarga);
+    $("configurarDescarga")?.addEventListener('click', mostrarConfiguracionDescarga);
+    $("cancelarDescarga")?.addEventListener('click', cancelarDescarga);
+}
+
+function mostrarConfiguracionDescarga() {
+    const modal = document.createElement('div');
+    modal.innerHTML = `
+        <div class="modal fade" id="configModal" tabindex="-1">
+            <div class="modal-dialog">
+                <div class="modal-content">
+                    <div class="modal-header">
+                        <h5 class="modal-title">Configuración de Descarga</h5>
+                        <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+                    </div>
+                    <div class="modal-body">
+                        <div class="mb-3">
+                            <label class="form-label">Tamaño de chunk (archivos por lote)</label>
+                            <input type="number" class="form-control" id="configChunkSize" 
+                                   value="${colaDescarga.configuracion.chunkSize}" min="10" max="100">
+                            <small class="text-muted">Menor = más estable, Mayor = más rápido</small>
+                        </div>
+                        <div class="mb-3">
+                            <label class="form-label">Máximo reintentos por lote</label>
+                            <input type="number" class="form-control" id="configMaxReintentos" 
+                                   value="${colaDescarga.configuracion.maxReintentos}" min="1" max="20">
+                        </div>
+                        <div class="mb-3">
+                            <label class="form-label">Delay inicial (ms)</label>
+                            <input type="number" class="form-control" id="configDelay" 
+                                   value="${colaDescarga.configuracion.delayInicial}" min="1000" max="10000" step="500">
+                        </div>
+                        <div class="mb-3">
+                            <div class="form-check">
+                                <input class="form-check-input" type="checkbox" id="configAutoRetry" 
+                                       ${colaDescarga.configuracion.autoRetry ? 'checked' : ''}>
+                                <label class="form-check-label" for="configAutoRetry">
+                                    Reintentos automáticos
+                                </label>
+                            </div>
+                        </div>
+                    </div>
+                    <div class="modal-footer">
+                        <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Cancelar</button>
+                        <button type="button" class="btn btn-primary" id="guardarConfig">Guardar</button>
+                    </div>
+                </div>
+            </div>
+        </div>
+    `;
+    
+    document.body.appendChild(modal);
+    const modalInstance = new bootstrap.Modal(modal.querySelector('#configModal'));
+    modalInstance.show();
+    
+    modal.querySelector('#guardarConfig').addEventListener('click', () => {
+        colaDescarga.configuracion.chunkSize = parseInt($("configChunkSize").value);
+        colaDescarga.configuracion.maxReintentos = parseInt($("configMaxReintentos").value);
+        colaDescarga.configuracion.delayInicial = parseInt($("configDelay").value);
+        colaDescarga.configuracion.autoRetry = $("configAutoRetry").checked;
+        
+        guardarColaEnLocalStorage();
+        mostrarPanelDescarga();
+        modalInstance.hide();
+        showToast('Configuración guardada', 'success');
+    });
+    
+    modal.addEventListener('hidden.bs.modal', () => {
+        document.body.removeChild(modal);
+    });
+}
+
+async function reanudarDescarga() {
+    if (colaDescarga.enProceso || colaDescarga.pendientes.length === 0) return;
+    
+    colaDescarga.enProceso = true;
+    mostrarPanelDescarga();
+    
+    try {
+        await procesarColaDescarga();
+    } catch (error) {
+        showToast('Error en descarga: ' + error.message, 'danger');
+    } finally {
+        colaDescarga.enProceso = false;
+        mostrarPanelDescarga();
+        guardarColaEnLocalStorage();
+    }
+}
+
+function pausarDescarga() {
+    colaDescarga.enProceso = false;
+    mostrarPanelDescarga();
+    guardarColaEnLocalStorage();
+    showToast('Descarga pausada', 'info');
+}
+
+function cancelarDescarga() {
+    if (confirm('¿Está seguro de cancelar la descarga? Se perderá el progreso actual.')) {
+        colaDescarga.enProceso = false;
+        limpiarColaStorage();
+        document.getElementById('panelDescarga')?.remove();
+        showToast('Descarga cancelada', 'warning');
+    }
+}
+
+// ==============================
+// MOTOR DE DESCARGA ROBUSTO
+// ==============================
+
+async function procesarColaDescarga() {
+    while (colaDescarga.pendientes.length > 0 && colaDescarga.enProceso) {
+        const loteSize = Math.min(colaDescarga.configuracion.chunkSize, colaDescarga.pendientes.length);
+        const loteActual = colaDescarga.pendientes.slice(0, loteSize);
+        
+        mostrarPanelDescarga(); // Actualizar UI
+        
+        try {
+            const response = await retryPendingCfdi(
+                loteActual, 
+                lastDownloadFormData, 
+                lastDownloadType,
+                {
+                    maxReintentos: colaDescarga.configuracion.maxReintentos,
+                    chunkSize: Math.min(loteSize, 20), // Máximo 20 por chunk interno
+                    delayInicial: colaDescarga.configuracion.delayInicial
+                }
+            );
+            
+            if (response.error) {
+                throw new Error(response.error);
+            }
+            
+            // Actualizar estado
+            const exitosos = response.descargados || [];
+            const fallidos = response.noDescargados || [];
+            
+            colaDescarga.descargados += exitosos.length;
+            colaDescarga.pendientes = colaDescarga.pendientes.filter(uuid => !exitosos.includes(uuid));
+            
+            // Marcar como descargados en el set global
+            exitosos.forEach(uuid => descargadosSet.add(uuid));
+            
+            // Si hay fallidos, moverlos al final de la cola para reintentarlos después
+            if (fallidos.length > 0 && colaDescarga.configuracion.autoRetry) {
+                const fallidosNoEnCola = fallidos.filter(uuid => !colaDescarga.pendientes.includes(uuid));
+                colaDescarga.pendientes = colaDescarga.pendientes.concat(fallidosNoEnCola);
+            }
+            
+            guardarColaEnLocalStorage();
+            
+            // Pausa breve entre lotes
+            if (colaDescarga.pendientes.length > 0 && colaDescarga.enProceso) {
+                await sleep(1000);
+            }
+            
+        } catch (error) {
+            colaDescarga.intentos++;
+            
+            if (colaDescarga.intentos >= colaDescarga.maxIntentos) {
+                showToast(`Error tras ${colaDescarga.maxIntentos} intentos: ${error.message}`, 'danger');
+                break;
+            } else {
+                showToast(`Error en intento ${colaDescarga.intentos}. Reintentando...`, 'warning');
+                // Espera exponencial
+                await sleep(Math.min(2000 * Math.pow(2, colaDescarga.intentos), 30000));
+            }
+        }
+    }
+    
+    if (colaDescarga.pendientes.length === 0) {
+        showToast(`¡Descarga completada! Se descargaron ${colaDescarga.descargados} archivos.`, 'success');
+        setTimeout(() => {
+            limpiarColaStorage();
+            document.getElementById('panelDescarga')?.remove();
+        }, 5000);
+    }
+}
+
+// ==============================
+// FUNCIONES DE DESCARGA MEJORADAS
+// ==============================
+
+async function iniciarDescargaMasiva(uuids, formData, downloadType = 'xml') {
+    if (!sesionActiva) {
+        showToast('Primero debe iniciar sesión en el SAT', "warning");
+        return;
+    }
+    
+    // Filtrar los ya descargados
+    const uuidsPendientes = uuids.filter(u => !descargadosSet.has(u));
+    
+    if (uuidsPendientes.length === 0) {
+        showToast('Todos estos CFDI ya fueron descargados', 'info');
+        return;
+    }
+    
+    // Configurar cola
+    colaDescarga.total = uuidsPendientes.length;
+    colaDescarga.descargados = 0;
+    colaDescarga.pendientes = [...uuidsPendientes];
+    colaDescarga.enProceso = true;
+    colaDescarga.intentos = 0;
+    
+    lastDownloadFormData = formData;
+    lastDownloadType = downloadType;
+    
+    guardarColaEnLocalStorage();
+    mostrarPanelDescarga();
+    
+    showToast(`Iniciando descarga de ${uuidsPendientes.length} archivos...`, 'info');
+    
+    try {
+        await procesarColaDescarga();
+    } catch (error) {
+        showToast('Error en descarga masiva: ' + error.message, 'danger');
+    } finally {
+        colaDescarga.enProceso = false;
+        mostrarPanelDescarga();
+        guardarColaEnLocalStorage();
+    }
+}
+
+async function descargarSeleccionados() {
+    const uuids = obtenerUuidsSeleccionados();
+    if (uuids.length === 0) {
+        showToast('Seleccione al menos un CFDI para descargar', "warning");
+        return;
+    }
+    
+    const downloadType = $("downloadType")?.value || 'xml';
+    await iniciarDescargaMasiva(uuids, obtenerDatosFormulario(), downloadType);
+}
 
 // ==============================
 // UTILIDADES GENERALES
@@ -489,7 +861,8 @@ async function buscarYDescargarEnChunksPorDias(data, diasPorChunk = 7, reintento
 
         if (allCfdis.length > 0 && confirm(`¿Desea descargar todos los ${allCfdis.length} CFDI encontrados?`)) {
             const uuids = allCfdis.map(cfdi => cfdi.uuid);
-            await descargarEnChunks(uuids, data, chunkSize);
+            const downloadType = data.downloadType || 'xml';
+            await iniciarDescargaMasiva(uuids, data, downloadType);
         }
 
     } catch (e) {
@@ -500,33 +873,11 @@ async function buscarYDescargarEnChunksPorDias(data, diasPorChunk = 7, reintento
     }
 }
 
+// Función legacy mantenida para compatibilidad - ahora usa el nuevo sistema
 async function reintentarFaltantes() {
-    const btn = document.getElementById('retryMissingBtn');
-    if (btn) btn.disabled = true;
-    while (pendientesDescarga.length > 0) {
-        try {
-            mostrarSpinner(true);
-            showToast(`Reintentando ${pendientesDescarga.length} faltantes...`, 'info');
-            const response = await downloadCfdi(pendientesDescarga, lastDownloadFormData, lastDownloadType);
-            if (response.error) {
-                if (handleSatSessionError(response.error)) return;
-                showToast('Error en descarga: ' + response.error, 'danger');
-                break;
-            }
-            pendientesDescarga = response.noDescargados || [];
-        } catch (e) {
-            showToast(e.message, 'danger');
-            break;
-        } finally {
-            mostrarSpinner(false);
-        }
-    }
-    if (btn) btn.disabled = false;
     if (pendientesDescarga.length > 0) {
-        btn.textContent = `Reintentar faltantes (${pendientesDescarga.length})`;
-    } else if (btn) {
-        btn.remove();
-        showToast('Todos los faltantes se descargaron', 'success');
+        await iniciarDescargaMasiva(pendientesDescarga, lastDownloadFormData, lastDownloadType);
+        pendientesDescarga = []; // Limpiar la lista legacy
     }
 }
 
@@ -540,79 +891,10 @@ async function descargarSeleccionados() {
     }
 }
 
+// Función legacy actualizada para usar el nuevo sistema
 async function realizarDescarga(uuids, formData) {
-    if (!sesionActiva) return showToast('Primero debe iniciar sesión en el SAT', "warning");
-    uuids = uuids.filter(u => !descargadosSet.has(u));
-    if (uuids.length === 0) {
-        showToast('Todos estos CFDI ya fueron descargados', 'info');
-        return;
-    }
     const downloadType = $("downloadType")?.value || 'xml';
-    lastDownloadFormData = formData;
-    lastDownloadType = downloadType;
-    limpiarBarraDeDescarga();
-    mostrarSpinner(true);
-    const progressDiv = document.createElement('div');
-    progressDiv.className = "descarga-progress";
-    progressDiv.innerHTML = `
-        <div class="alert alert-info">
-            <strong>Descargando ${uuids.length} archivos...</strong>
-            <div class="progress mt-2">
-                <div class="progress-bar progress-bar-striped progress-bar-animated"
-                     style="width: 100%" id="downloadProgress">
-                    Preparando descarga...
-                </div>
-            </div>
-        </div>`;
-    $("resultados").appendChild(progressDiv);
-    try {
-        let response = await downloadCfdi(uuids, formData, downloadType);
-        if (response.error) {
-            const retry = await handleSatSessionError(response.error, () => downloadCfdi(uuids, formData, downloadType));
-            if (retry === true) return;
-            if (retry) response = retry;
-            if (response.error) return showToast('Error en descarga: ' + response.error, "danger");
-        }
-        pendientesDescarga = response.noDescargados || [];
-        let msg = `<div class="alert alert-success"><strong>Descarga completada</strong><br>Mensaje: ${response.msg}`;
-        if (response.descargados) {
-           const descargados = Array.isArray(response.descargados)
-                ? response.descargados
-                : Object.values(response.descargados).flat();
-            descargados.forEach(uuid => descargadosSet.add(uuid));
-            if (!Array.isArray(response.descargados)) {
-                msg += '<br><strong>Archivos descargados por período:</strong><ul>';
-                for (const [periodo, archivos] of Object.entries(response.descargados)) {
-                    msg += `<li>${periodo}: ${archivos.length} archivos</li>`;
-                }
-                
-            }
-            msg += '</ul>';
-        }
-        if (response.avisos && response.avisos.length > 0) {
-            msg += '<br><strong>Avisos:</strong><ul>';
-            response.avisos.forEach(aviso => { msg += `<li>${aviso}</li>`; });
-            msg += '</ul>';
-        }
-        if (pendientesDescarga.length > 0) {
-            msg += `<br><strong>Faltantes por descargar:</strong> ${pendientesDescarga.length}`;
-        }
-        msg += '</div>';
-         if (pendientesDescarga.length > 0) {
-            msg += `<div class="mt-2"><button class="btn btn-warning btn-sm" id="retryMissingBtn">Reintentar faltantes (${pendientesDescarga.length})</button></div>`;
-        }
-        progressDiv.innerHTML = msg;
-        if (pendientesDescarga.length > 0) {
-            document.getElementById('retryMissingBtn').onclick = reintentarFaltantes;
-        }
-        showToast("Descarga completada", "success");
-    } catch (e) {
-        progressDiv.innerHTML = `<div class="alert alert-danger">Error en descarga: ${e.message}</div>`;
-        showToast(e.message, "danger");
-        setTimeout(() => { progressDiv.remove(); }, 7000)
-    } finally {
-        mostrarSpinner(false);
-    }
+    await iniciarDescargaMasiva(uuids, formData, downloadType);
 }
 
 // ==============================
@@ -703,13 +985,8 @@ $("descargarTodosBtn").onclick = async () => {
     if (metadatosCFDI.length === 0) return showToast('Primero debe realizar una búsqueda', "warning");
     if (!confirm(`¿Desea descargar todos los ${metadatosCFDI.length} CFDI encontrados?`)) return;
     const uuids = metadatosCFDI.map(cfdi => cfdi.uuid);
-    // Solo si tienes muchos, divídelos
-    const CHUNK_SIZE = 200; // Puedes aumentar si el servidor aguanta más
-    for (let i = 0; i < uuids.length; i += CHUNK_SIZE) {
-        const chunk = uuids.slice(i, i + CHUNK_SIZE);
-        await realizarDescarga(chunk, obtenerDatosFormulario());
-        // Puedes agregar barra de progreso aquí si quieres
-    }
+    const downloadType = $("downloadType")?.value || 'xml';
+    await iniciarDescargaMasiva(uuids, obtenerDatosFormulario(), downloadType);
 };
 
 
@@ -742,11 +1019,8 @@ $("buscarDescargarBtn").onclick = async () => {
 
         if (metadatosCFDI.length > 0 && confirm(`¿Desea descargar todos los ${metadatosCFDI.length} CFDI encontrados?`)) {
             const uuids = metadatosCFDI.map(cfdi => cfdi.uuid);
-            if (uuids.length > 50) {
-                await descargarEnChunks(uuids, data, 50);
-            } else {
-                await realizarDescarga(uuids, data);
-            }
+            const downloadType = $("downloadType")?.value || 'xml';
+            await iniciarDescargaMasiva(uuids, data, downloadType);
         }
     } catch (e) {
         $("resultados").innerHTML = `<div class="alert alert-danger">Error: ${e.message}</div>`;
@@ -766,6 +1040,12 @@ window.onload = async () => {
     $("buscarBtn").disabled = true;
     $("descargarTodosBtn").disabled = true;
     $("buscarDescargarBtn").disabled = true;
+
+    // Cargar cola de descarga pendiente si existe
+    const colaRestaurada = cargarColaDeLocalStorage();
+    if (colaRestaurada) {
+        showToast('Se detectaron descargas pendientes. Use el panel de control para continuar.', 'info');
+    }
 
     const rfc = $("rfc").value.trim();
     if (rfc) {

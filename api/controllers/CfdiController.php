@@ -84,7 +84,12 @@ class CfdiController {
 
     $filtros = FiltersHelper::get($data);
     $resourceType = strtolower($filtros['downloadType']) === 'pdf' ? ResourceType::pdf() : ResourceType::xml();
-
+    
+    // Configuración de reintentos
+    $maxReintentos = min($data['maxReintentos'] ?? DEFAULT_MAX_RETRIES, MAX_RETRIES_LIMIT);
+    $chunkSize = max(MIN_CHUNK_SIZE, min($data['chunkSize'] ?? DEFAULT_CHUNK_SIZE, MAX_CHUNK_SIZE));
+    $delayInicial = $data['delayInicial'] ?? DEFAULT_INITIAL_DELAY;
+    
     $satScraper = self::crearSatScraper($rfc, $ciec, $metadataHandler);
     $query = FiltersHelper::buildQuery($filtros);
     $list = $satScraper->listByPeriod($query);
@@ -93,32 +98,203 @@ class CfdiController {
     $cfdisToDownload = array_filter($allCfdis, fn($cfdi) => in_array($cfdi->uuid(), $selectedUuids));
     if (empty($cfdisToDownload)) Response::json(['error' => 'No se encontraron CFDI para descargar.'], 400);
 
-    // descarga todos los seleccionados con concurrencia 50 (lo maneja Guzzle)
-    $downloadList = new MetadataList($cfdisToDownload);
-   //$descargados = [];
-
-    $resultados = $satScraper->resourceDownloader($resourceType, $downloadList)
-        ->setConcurrency(30) // Puedes ajustar el número
-        ->saveTo(DESCARGA_PATH, true, 0777);
-
-    // $resultados es un array de UUIDs descargados exitosamente
-    //foreach ($resultados as $uuid) {
-    //    $descargados[] = $uuid;
-    //}
-    $descargados = $resultados;
-    $faltantes = array_values(array_diff($selectedUuids, $descargados));
-     
-    $descargados = $resultados;
-    $faltantes = array_values(array_diff($selectedUuids, $descargados));
+    $totalOriginal = count($selectedUuids);
+    $descargados = [];
+    $faltantes = $selectedUuids;
+    $intento = 0;
+    $tiempoEspera = $delayInicial;
+    
+    while (!empty($faltantes) && $intento < $maxReintentos) {
+        $intento++;
+        
+        // Filtrar CFDIs pendientes
+        $cfdisPendientes = array_filter($cfdisToDownload, fn($cfdi) => in_array($cfdi->uuid(), $faltantes));
+        
+        if (empty($cfdisPendientes)) break;
+        
+        // Dividir en chunks para evitar timeouts
+        $chunks = array_chunk($cfdisPendientes, $chunkSize);
+        $descargadosEnIntento = [];
+        
+        foreach ($chunks as $chunkIndex => $chunk) {
+            try {
+                $downloadList = new MetadataList($chunk);
+                
+                // Recrear scraper si es necesario (por si la sesión expiró)
+                if ($intento > 1) {
+                    $satScraper = self::crearSatScraper($rfc, $ciec, $metadataHandler);
+                }
+                
+                $resultados = $satScraper->resourceDownloader($resourceType, $downloadList)
+                    ->setConcurrency($chunkSize)
+                    ->saveTo(DESCARGA_PATH, true, 0777);
+                
+                $descargadosEnIntento = array_merge($descargadosEnIntento, $resultados);
+                
+                // Breve pausa entre chunks para no saturar el SAT
+                if ($chunkIndex < count($chunks) - 1) {
+                    usleep(500000); // 0.5 segundos
+                }
+                
+            } catch (Exception $e) {
+                // Log del error específico para debugging
+                error_log("Error en chunk $chunkIndex del intento $intento: " . $e->getMessage());
+                
+                // Si es error de sesión, intentar reautenticar
+                if (strpos($e->getMessage(), 'session') !== false || strpos($e->getMessage(), 'login') !== false) {
+                    try {
+                        $satScraper = self::crearSatScraper($rfc, $ciec, $metadataHandler);
+                    } catch (Exception $authError) {
+                        // Si falla la reautenticación, abortar este intento
+                        break;
+                    }
+                }
+                
+                // Continuar con el siguiente chunk
+                continue;
+            }
+        }
+        
+        // Actualizar listas
+        $descargados = array_merge($descargados, $descargadosEnIntento);
+        $faltantes = array_values(array_diff($selectedUuids, $descargados));
+        
+        // Si completamos todo, salir del bucle
+        if (empty($faltantes)) break;
+        
+        // Si no es el último intento, esperar antes del siguiente
+        if ($intento < $maxReintentos && !empty($faltantes)) {
+            // Espera exponencial con jitter para evitar saturar el SAT
+            $jitter = rand(500, 1500); // 0.5-1.5 segundos adicionales aleatorios
+            usleep($tiempoEspera * 1000 + $jitter * 1000);
+            $tiempoEspera = min($tiempoEspera * 1.5, 30000); // máximo 30 segundos
+        }
+    }
+    
+    $porcentajeExito = $totalOriginal > 0 ? round((count($descargados) / $totalOriginal) * 100, 2) : 0;
+    
+    $mensaje = "Descarga completada en $intento intento(s). ";
+    $mensaje .= "Exitosos: " . count($descargados) . "/$totalOriginal ($porcentajeExito%)";
+    
+    if (!empty($faltantes)) {
+        $mensaje .= ". Pendientes: " . count($faltantes);
+    }
 
     Response::json([
-        'status' => 'OK',
-        'msg' => 'Descarga completada.',
+        'status' => empty($faltantes) ? 'COMPLETE' : 'PARTIAL',
+        'msg' => $mensaje,
         'descargados' => $descargados,
         'noDescargados' => $faltantes,
+        'intentos' => $intento,
+        'porcentajeExito' => $porcentajeExito,
         'avisos' => $metadataHandler->avisos,
     ]);
 }
+
+    public static function retryPending($data) {
+        [$rfc, $ciec] = self::requireSession($data);
+        $metadataHandler = new AvisosMetadataHandler();
+        $pendingUuids = $data['pendingUuids'] ?? [];
+        
+        if (empty($pendingUuids)) {
+            Response::json(['error' => 'No se proporcionaron UUIDs pendientes para reintentar'], 400);
+        }
+        
+        $filtros = FiltersHelper::get($data);
+        $resourceType = strtolower($filtros['downloadType']) === 'pdf' ? ResourceType::pdf() : ResourceType::xml();
+        
+        // Configuración más agresiva para reintentos
+        $maxReintentos = min($data['maxReintentos'] ?? RETRY_MAX_RETRIES, MAX_RETRIES_LIMIT);
+        $chunkSize = max(MIN_CHUNK_SIZE, min($data['chunkSize'] ?? RETRY_CHUNK_SIZE, 25)); // Chunks más pequeños para reintentos
+        $delayInicial = $data['delayInicial'] ?? RETRY_INITIAL_DELAY;
+        
+        $satScraper = self::crearSatScraper($rfc, $ciec, $metadataHandler);
+        $query = FiltersHelper::buildQuery($filtros);
+        $list = $satScraper->listByPeriod($query);
+        $allCfdis = iterator_to_array($list);
+
+        $cfdisToRetry = array_filter($allCfdis, fn($cfdi) => in_array($cfdi->uuid(), $pendingUuids));
+        
+        if (empty($cfdisToRetry)) {
+            Response::json(['error' => 'No se encontraron CFDI pendientes para reintentar.'], 400);
+        }
+
+        $totalOriginal = count($pendingUuids);
+        $descargados = [];
+        $faltantes = $pendingUuids;
+        $intento = 0;
+        $tiempoEspera = $delayInicial;
+        
+        while (!empty($faltantes) && $intento < $maxReintentos) {
+            $intento++;
+            
+            $cfdisPendientes = array_filter($cfdisToRetry, fn($cfdi) => in_array($cfdi->uuid(), $faltantes));
+            
+            if (empty($cfdisPendientes)) break;
+            
+            // Para reintentos, usar chunks aún más pequeños
+            $chunks = array_chunk($cfdisPendientes, $chunkSize);
+            $descargadosEnIntento = [];
+            
+            foreach ($chunks as $chunkIndex => $chunk) {
+                try {
+                    // Recrear scraper en cada intento para asegurar sesión fresca
+                    $satScraper = self::crearSatScraper($rfc, $ciec, $metadataHandler);
+                    
+                    $downloadList = new MetadataList($chunk);
+                    
+                    $resultados = $satScraper->resourceDownloader($resourceType, $downloadList)
+                        ->setConcurrency($chunkSize)
+                        ->saveTo(DESCARGA_PATH, true, 0777);
+                    
+                    $descargadosEnIntento = array_merge($descargadosEnIntento, $resultados);
+                    
+                    // Pausa más larga entre chunks en reintentos
+                    if ($chunkIndex < count($chunks) - 1) {
+                        usleep(1000000); // 1 segundo
+                    }
+                    
+                } catch (Exception $e) {
+                    error_log("Error en reintento - chunk $chunkIndex del intento $intento: " . $e->getMessage());
+                    
+                    // En reintentos, ser más tolerante con errores
+                    usleep(2000000); // 2 segundos de pausa si hay error
+                    continue;
+                }
+            }
+            
+            $descargados = array_merge($descargados, $descargadosEnIntento);
+            $faltantes = array_values(array_diff($pendingUuids, $descargados));
+            
+            if (empty($faltantes)) break;
+            
+            // Espera exponencial más agresiva para reintentos
+            if ($intento < $maxReintentos && !empty($faltantes)) {
+                $jitter = rand(1000, 3000); // 1-3 segundos adicionales
+                usleep($tiempoEspera * 1000 + $jitter * 1000);
+                $tiempoEspera = min($tiempoEspera * 2, 60000); // máximo 60 segundos
+            }
+        }
+        
+        $porcentajeExito = $totalOriginal > 0 ? round((count($descargados) / $totalOriginal) * 100, 2) : 0;
+        
+        $mensaje = "Reintento completado en $intento intento(s). ";
+        $mensaje .= "Recuperados: " . count($descargados) . "/$totalOriginal ($porcentajeExito%)";
+        
+        if (!empty($faltantes)) {
+            $mensaje .= ". Aún pendientes: " . count($faltantes);
+        }
+
+        Response::json([
+            'status' => empty($faltantes) ? 'COMPLETE' : 'PARTIAL',
+            'msg' => $mensaje,
+            'descargados' => $descargados,
+            'noDescargados' => $faltantes,
+            'intentos' => $intento,
+            'porcentajeExito' => $porcentajeExito,
+            'avisos' => $metadataHandler->avisos,
+        ]);
+    }
 
 
     private static function crearSatScraper($rfc, $ciec, $metadataHandler) {
