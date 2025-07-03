@@ -14,6 +14,7 @@ let pendientesDescarga = [];
 let lastDownloadFormData = null;
 let lastDownloadType = 'xml';
 const descargadosSet = new Set();
+const pendientesSet = new Set();
 
 // Nuevo sistema de cola persistente
 let colaDescarga = {
@@ -43,7 +44,10 @@ $("buscarDescargarBtn").disabled = true;
 
 function guardarColaEnLocalStorage() {
     try {
-        localStorage.setItem('cfdi_cola_descarga', JSON.stringify(colaDescarga));
+        localStorage.setItem('cfdi_cola_descarga', JSON.stringify({
+            cola: colaDescarga,
+            pendientes: pendientesDescarga
+        }));
     } catch (e) {
         console.warn('No se pudo guardar la cola en localStorage:', e);
     }
@@ -53,10 +57,13 @@ function cargarColaDeLocalStorage() {
     try {
         const colaGuardada = localStorage.getItem('cfdi_cola_descarga');
         if (colaGuardada) {
-            const colaData = JSON.parse(colaGuardada);
-            // Solo restaurar si hay pendientes reales
+            const data = JSON.parse(colaGuardada);
+            const colaData = data.cola || {};
+            const pendData = data.pendientes || [];
             if (colaData.pendientes && colaData.pendientes.length > 0) {
                 colaDescarga = { ...colaDescarga, ...colaData };
+                pendientesDescarga = pendData;
+                pendData.forEach(u => pendientesSet.add(u));
                 mostrarPanelDescarga();
                 return true;
             }
@@ -83,6 +90,8 @@ function limpiarColaStorage() {
             autoRetry: true
         }
     };
+    pendientesDescarga = [];
+    pendientesSet.clear();
 }
 
 // ==============================
@@ -125,13 +134,18 @@ function mostrarPanelDescarga() {
                 </div>
                 <div class="col-md-4 text-end">
                     ${colaDescarga.pendientes.length > 0 ? `
-                        <button class="btn btn-sm btn-success me-1" id="reanudarDescarga" 
+                        <button class="btn btn-sm btn-success me-1" id="reanudarDescarga"
                                 ${colaDescarga.enProceso ? 'disabled' : ''}>
                             <i class="fas fa-play"></i> ${colaDescarga.enProceso ? 'Procesando...' : 'Reanudar'}
                         </button>
                         <button class="btn btn-sm btn-warning me-1" id="pausarDescarga"
                                 ${!colaDescarga.enProceso ? 'disabled' : ''}>
                             <i class="fas fa-pause"></i> Pausar
+                        </button>
+                    ` : ''}
+                    ${pendientesDescarga.length > 0 ? `
+                        <button class="btn btn-sm btn-info me-1" id="descargarPendientes">
+                            <i class="fas fa-redo"></i> Pendientes (${pendientesDescarga.length})
                         </button>
                     ` : ''}
                     <button class="btn btn-sm btn-secondary" id="configurarDescarga">
@@ -162,6 +176,7 @@ function mostrarPanelDescarga() {
     $("pausarDescarga")?.addEventListener('click', pausarDescarga);
     $("configurarDescarga")?.addEventListener('click', mostrarConfiguracionDescarga);
     $("cancelarDescarga")?.addEventListener('click', cancelarDescarga);
+    $("descargarPendientes")?.addEventListener('click', reintentarFaltantes);
 }
 
 function mostrarConfiguracionDescarga() {
@@ -271,69 +286,71 @@ function cancelarDescarga() {
 async function procesarColaDescarga() {
     while (colaDescarga.pendientes.length > 0 && colaDescarga.enProceso) {
         const loteSize = Math.min(colaDescarga.configuracion.chunkSize, colaDescarga.pendientes.length);
-        const loteActual = colaDescarga.pendientes.slice(0, loteSize);
-        
-        mostrarPanelDescarga(); // Actualizar UI
-        
-        try {
-            const response = await retryPendingCfdi(
-                loteActual, 
-                lastDownloadFormData, 
-                lastDownloadType,
-                {
-                    maxReintentos: colaDescarga.configuracion.maxReintentos,
-                    chunkSize: Math.min(loteSize, 20), // Máximo 20 por chunk interno
-                    delayInicial: colaDescarga.configuracion.delayInicial
+        const loteActual = colaDescarga.pendientes.splice(0, loteSize);
+
+        mostrarPanelDescarga();
+
+        let pendientesLote = [...loteActual];
+        let exitososTotal = [];
+        let intentosLote = 0;
+
+        while (pendientesLote.length > 0 && intentosLote < 3) {
+            intentosLote++;
+            try {
+                const response = await retryPendingCfdi(
+                    pendientesLote,
+                    lastDownloadFormData,
+                    lastDownloadType,
+                    {
+                        maxReintentos: colaDescarga.configuracion.maxReintentos,
+                        chunkSize: Math.min(pendientesLote.length, 20),
+                        delayInicial: colaDescarga.configuracion.delayInicial
+                    }
+                );
+
+                if (response.error) {
+                    if (await handleSatSessionError(response.error)) continue;
+                    throw new Error(response.error);
                 }
-            );
-            
-            if (response.error) {
-                throw new Error(response.error);
-            }
-            
-            // Actualizar estado
-            const exitosos = response.descargados || [];
-            const fallidos = response.noDescargados || [];
-            
-            colaDescarga.descargados += exitosos.length;
-            colaDescarga.pendientes = colaDescarga.pendientes.filter(uuid => !exitosos.includes(uuid));
-            
-            // Marcar como descargados en el set global
-            exitosos.forEach(uuid => descargadosSet.add(uuid));
-            
-            // Si hay fallidos, moverlos al final de la cola para reintentarlos después
-            if (fallidos.length > 0 && colaDescarga.configuracion.autoRetry) {
-                const fallidosNoEnCola = fallidos.filter(uuid => !colaDescarga.pendientes.includes(uuid));
-                colaDescarga.pendientes = colaDescarga.pendientes.concat(fallidosNoEnCola);
-            }
-            
-            guardarColaEnLocalStorage();
-            
-            // Pausa breve entre lotes
-            if (colaDescarga.pendientes.length > 0 && colaDescarga.enProceso) {
-                await sleep(1000);
-            }
-            
-        } catch (error) {
-            colaDescarga.intentos++;
-            
-            if (colaDescarga.intentos >= colaDescarga.maxIntentos) {
-                showToast(`Error tras ${colaDescarga.maxIntentos} intentos: ${error.message}`, 'danger');
-                break;
-            } else {
-                showToast(`Error en intento ${colaDescarga.intentos}. Reintentando...`, 'warning');
-                // Espera exponencial
-                await sleep(Math.min(2000 * Math.pow(2, colaDescarga.intentos), 30000));
+
+                exitososTotal = exitososTotal.concat(response.descargados || []);
+                pendientesLote = response.noDescargados || [];
+            } catch (error) {
+                if (await handleSatSessionError(error.message)) continue;
+                if (intentosLote >= 3) break;
             }
         }
+
+        colaDescarga.descargados += exitososTotal.length;
+        exitososTotal.forEach(uuid => {
+            descargadosSet.add(uuid);
+            pendientesSet.delete(uuid);
+        });
+        marcarFilasDescarga(exitososTotal, true);
+
+        if (pendientesLote.length > 0) {
+            pendientesLote.forEach(uuid => {
+                pendientesSet.add(uuid);
+            });
+            pendientesDescarga = pendientesDescarga.concat(pendientesLote.filter(u => !pendientesDescarga.includes(u)));
+            marcarFilasDescarga(pendientesLote, false);
+        }
+
+        guardarColaEnLocalStorage();
+
+        if (colaDescarga.enProceso) {
+            await sleep(1000);
+        }
     }
-    
-    if (colaDescarga.pendientes.length === 0) {
+
+    if (colaDescarga.pendientes.length === 0 && pendientesDescarga.length === 0) {
         showToast(`¡Descarga completada! Se descargaron ${colaDescarga.descargados} archivos.`, 'success');
         setTimeout(() => {
             limpiarColaStorage();
             document.getElementById('panelDescarga')?.remove();
         }, 5000);
+    } else if (colaDescarga.pendientes.length === 0 && pendientesDescarga.length > 0) {
+        showToast('Descarga finalizada con pendientes por revisar', 'warning');
     }
 }
 
@@ -354,7 +371,10 @@ async function iniciarDescargaMasiva(uuids, formData, downloadType = 'xml') {
         showToast('Todos estos CFDI ya fueron descargados', 'info');
         return;
     }
-    
+
+    pendientesSet.clear();
+    pendientesDescarga = [];
+
     // Configurar cola
     colaDescarga.total = uuidsPendientes.length;
     colaDescarga.descargados = 0;
@@ -428,6 +448,21 @@ function sleep(ms) {
 
 function limpiarBarraDeDescarga() {
     document.querySelectorAll('.descarga-progress, #barraDescargaCFDI').forEach(el => el.remove());
+}
+
+function marcarFilasDescarga(uuids, exito) {
+    uuids.forEach(uuid => {
+        const row = document.querySelector(`tr[data-uuid="${uuid}"]`);
+        if (row) {
+            if (exito) {
+                row.classList.remove('table-warning');
+                row.classList.add('table-success');
+            } else {
+                row.classList.remove('table-success');
+                row.classList.add('table-warning');
+            }
+        }
+    });
 }
 
 // ==============================
@@ -583,8 +618,12 @@ function mostrarResultados(data) {
             const totalFormateado = limpiarTotal(cfdi.total) !== null
                 ? `$${limpiarTotal(cfdi.total).toLocaleString('es-MX', { minimumFractionDigits: 2 })}`
                 : mostrarDato(null, "Total no disponible");
+
+            const rowClass = descargadosSet.has(cfdi.uuid) ? 'table-success' :
+                              (pendientesSet.has(cfdi.uuid) ? 'table-warning' : '');
+
             html += `
-                <tr>
+                <tr data-uuid="${cfdi.uuid}" class="${rowClass}">
                     <td><input type="checkbox" class="cfdi-checkbox" data-uuid="${cfdi.uuid}"></td>
                     <td><small>${mostrarDato(cfdi.uuid, "UUID no disponible")}</small></td>
                     <td>
@@ -611,6 +650,13 @@ function mostrarResultados(data) {
                     </tbody>
                 </table>
             </div>
+            ${pendientesDescarga.length > 0 ? `
+                <div class="mt-2">
+                    <button class="btn btn-sm btn-info" id="btnDescargarPendientesTabla">
+                        Descargar pendientes (${pendientesDescarga.length})
+                    </button>
+                </div>
+            ` : ''}
         `;
     } else {
         html += `<div class="alert alert-warning">No se encontraron CFDI con los criterios especificados.</div>`;
@@ -625,6 +671,7 @@ function mostrarResultados(data) {
         tooltipTriggerList.map(function (tooltipTriggerEl) {
             return new bootstrap.Tooltip(tooltipTriggerEl);
         });
+        document.getElementById('btnDescargarPendientesTabla')?.addEventListener('click', reintentarFaltantes);
     }
 }
 
@@ -876,8 +923,10 @@ async function buscarYDescargarEnChunksPorDias(data, diasPorChunk = 7, reintento
 // Función legacy mantenida para compatibilidad - ahora usa el nuevo sistema
 async function reintentarFaltantes() {
     if (pendientesDescarga.length > 0) {
-        await iniciarDescargaMasiva(pendientesDescarga, lastDownloadFormData, lastDownloadType);
-        pendientesDescarga = []; // Limpiar la lista legacy
+        const uuids = [...pendientesDescarga];
+        await iniciarDescargaMasiva(uuids, lastDownloadFormData, lastDownloadType);
+        pendientesDescarga = [];
+        pendientesSet.clear();
     }
 }
 
