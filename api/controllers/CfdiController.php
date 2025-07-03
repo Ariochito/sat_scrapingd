@@ -119,27 +119,27 @@ class CfdiController {
         foreach ($chunks as $chunkIndex => $chunk) {
             try {
                 $downloadList = new MetadataList($chunk);
-                
+
                 // Recrear scraper si es necesario (por si la sesión expiró)
                 if ($intento > 1) {
                     $satScraper = self::crearSatScraper($rfc, $ciec, $metadataHandler);
                 }
-                
+
                 $resultados = $satScraper->resourceDownloader($resourceType, $downloadList)
                     ->setConcurrency($chunkSize)
                     ->saveTo(DESCARGA_PATH, true, 0777);
-                
+
                 $descargadosEnIntento = array_merge($descargadosEnIntento, $resultados);
-                
+
                 // Breve pausa entre chunks para no saturar el SAT
                 if ($chunkIndex < count($chunks) - 1) {
                     usleep(500000); // 0.5 segundos
                 }
-                
+
             } catch (Exception $e) {
                 // Log del error específico para debugging
                 error_log("Error en chunk $chunkIndex del intento $intento: " . $e->getMessage());
-                
+
                 // Si es error de sesión, intentar reautenticar
                 if (strpos($e->getMessage(), 'session') !== false || strpos($e->getMessage(), 'login') !== false) {
                     try {
@@ -149,10 +149,15 @@ class CfdiController {
                         break;
                     }
                 }
-                
+
                 // Continuar con el siguiente chunk
                 continue;
             }
+        }
+
+        if (empty($descargadosEnIntento)) {
+            // Ningún CFDI se pudo descargar en este intento, salir para evitar ciclo
+            break;
         }
         
         // Actualizar listas
@@ -240,27 +245,32 @@ class CfdiController {
                 try {
                     // Recrear scraper en cada intento para asegurar sesión fresca
                     $satScraper = self::crearSatScraper($rfc, $ciec, $metadataHandler);
-                    
+
                     $downloadList = new MetadataList($chunk);
-                    
+
                     $resultados = $satScraper->resourceDownloader($resourceType, $downloadList)
                         ->setConcurrency($chunkSize)
                         ->saveTo(DESCARGA_PATH, true, 0777);
-                    
+
                     $descargadosEnIntento = array_merge($descargadosEnIntento, $resultados);
-                    
+
                     // Pausa más larga entre chunks en reintentos
                     if ($chunkIndex < count($chunks) - 1) {
                         usleep(1000000); // 1 segundo
                     }
-                    
+
                 } catch (Exception $e) {
                     error_log("Error en reintento - chunk $chunkIndex del intento $intento: " . $e->getMessage());
-                    
+
                     // En reintentos, ser más tolerante con errores
                     usleep(2000000); // 2 segundos de pausa si hay error
                     continue;
                 }
+            }
+
+            if (empty($descargadosEnIntento)) {
+                // Si no se descargó nada, abortar para evitar ciclo infinito
+                break;
             }
             
             $descargados = array_merge($descargados, $descargadosEnIntento);
