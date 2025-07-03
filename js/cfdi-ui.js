@@ -180,103 +180,173 @@ function mostrarPanelDescarga() {
 }
 
 function mostrarConfiguracionDescarga() {
+    // Si existe, lo quitamos para evitar duplicados
+    const anterior = document.getElementById('configModal');
+    if (anterior) anterior.remove();
+
+    // Crea estilos animados y modernos
+    if (!document.getElementById('customConfigModalCSS')) {
+        const style = document.createElement('style');
+        style.id = 'customConfigModalCSS';
+        style.innerHTML = `
+            .modal-content {
+                border-radius: 1.2rem;
+                box-shadow: 0 10px 40px 0 #0003;
+                border: none;
+                animation: bounceIn .7s cubic-bezier(.87,-.41,.19,1.44);
+            }
+            .modal-header {
+                background: linear-gradient(87deg, #9adcfb 0, #d1f7c4 100%);
+                border-top-left-radius: 1.2rem;
+                border-top-right-radius: 1.2rem;
+            }
+            .modal-title i {
+                animation: spin 2s linear infinite;
+                margin-right: 7px;
+            }
+            @keyframes spin {
+                0% {transform: rotate(0deg);}
+                100% {transform: rotate(359deg);}
+            }
+            @keyframes bounceIn {
+                0% {transform: scale(.6);opacity: 0;}
+                100% {transform: scale(1);opacity: 1;}
+            }
+            .preview-value {
+                font-weight: bold;
+                color: #20a720;
+                margin-left: 10px;
+            }
+            .modal .tip-hover {
+                position: absolute;
+                background: #222c;
+                color: #fff;
+                padding: 6px 12px;
+                border-radius: 7px;
+                font-size: 1em;
+                pointer-events: none;
+                opacity: 0;
+                transition: opacity .2s;
+                z-index: 5000;
+            }
+        `;
+        document.head.appendChild(style);
+    }
+
+    // Modal principal
     const modal = document.createElement('div');
+    modal.className = 'modal fade';
+    modal.id = 'configModal';
+    modal.tabIndex = -1;
+    modal.setAttribute('aria-labelledby', 'configModalLabel');
     modal.innerHTML = `
-        <div class="modal fade" id="configModal" tabindex="-1">
-            <div class="modal-dialog">
-                <div class="modal-content">
-                    <div class="modal-header">
-                        <h5 class="modal-title">Configuración de Descarga</h5>
-                        <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+        <div class="modal-dialog">
+            <div class="modal-content position-relative">
+                <div class="modal-header">
+                    <h5 class="modal-title" id="configModalLabel">
+                        <i class="fas fa-cogs"></i>
+                        Configuración de Descarga
+                    </h5>
+                    <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+                </div>
+                <div class="modal-body pb-0">
+                    <div class="mb-3 position-relative">
+                        <label class="form-label">Tamaño de chunk (archivos por lote)
+                            <span class="preview-value" id="previewChunk">${colaDescarga.configuracion.chunkSize}</span>
+                        </label>
+                        <input type="number" class="form-control" id="configChunkSize"
+                            value="${colaDescarga.configuracion.chunkSize}" min="10" max="100" data-tip="Determina cuántos CFDI se descargan por intento. Valores bajos = más seguro.">
                     </div>
-                    <div class="modal-body">
-                        <div class="mb-3">
-                            <label class="form-label">Tamaño de chunk (archivos por lote)</label>
-                            <input type="number" class="form-control" id="configChunkSize" 
-                                   value="${colaDescarga.configuracion.chunkSize}" min="10" max="100">
-                            <small class="text-muted">Menor = más estable, Mayor = más rápido</small>
-                        </div>
-                        <div class="mb-3">
-                            <label class="form-label">Máximo reintentos por lote</label>
-                            <input type="number" class="form-control" id="configMaxReintentos" 
-                                   value="${colaDescarga.configuracion.maxReintentos}" min="1" max="20">
-                        </div>
-                        <div class="mb-3">
-                            <label class="form-label">Delay inicial (ms)</label>
-                            <input type="number" class="form-control" id="configDelay" 
-                                   value="${colaDescarga.configuracion.delayInicial}" min="1000" max="10000" step="500">
-                        </div>
-                        <div class="mb-3">
-                            <div class="form-check">
-                                <input class="form-check-input" type="checkbox" id="configAutoRetry" 
-                                       ${colaDescarga.configuracion.autoRetry ? 'checked' : ''}>
-                                <label class="form-check-label" for="configAutoRetry">
-                                    Reintentos automáticos
-                                </label>
-                            </div>
-                        </div>
+                    <div class="mb-3 position-relative">
+                        <label class="form-label">Máximo reintentos por lote
+                            <span class="preview-value" id="previewReintentos">${colaDescarga.configuracion.maxReintentos}</span>
+                        </label>
+                        <input type="number" class="form-control" id="configMaxReintentos"
+                            value="${colaDescarga.configuracion.maxReintentos}" min="1" max="20" data-tip="¿Cuántos reintentos automáticos quieres por error de descarga?">
                     </div>
-                    <div class="modal-footer">
-                        <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Cancelar</button>
-                        <button type="button" class="btn btn-primary" id="guardarConfig">Guardar</button>
+                    <div class="mb-3 position-relative">
+                        <label class="form-label">Delay inicial (ms)
+                            <span class="preview-value" id="previewDelay">${colaDescarga.configuracion.delayInicial}</span>
+                        </label>
+                        <input type="number" class="form-control" id="configDelay"
+                            value="${colaDescarga.configuracion.delayInicial}" min="1000" max="10000" step="500" data-tip="A mayor delay, menos riesgo de bloqueo temporal del SAT.">
                     </div>
+                    <div class="mb-3 form-check position-relative">
+                        <input class="form-check-input" type="checkbox" id="configAutoRetry"
+                            ${colaDescarga.configuracion.autoRetry ? 'checked' : ''} data-tip="Activa para que el sistema intente recuperar automáticamente errores menores.">
+                        <label class="form-check-label" for="configAutoRetry">
+                            Reintentos automáticos
+                        </label>
+                    </div>
+                    <div class="tip-hover" id="configTip"></div>
+                </div>
+                <div class="modal-footer pb-3 pt-3">
+                    <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Cancelar</button>
+                    <button type="button" class="btn btn-primary" id="guardarConfig">
+                        <span id="guardarIcon" class="fas fa-save"></span> Guardar
+                    </button>
                 </div>
             </div>
         </div>
     `;
-    
     document.body.appendChild(modal);
-    const modalInstance = new bootstrap.Modal(modal.querySelector('#configModal'));
+
+    // Bootstrap
+    const modalInstance = new bootstrap.Modal(modal, { backdrop: 'static', keyboard: true });
     modalInstance.show();
-    
+
+    // Preview en vivo y tips UX
+    const chunk = modal.querySelector("#configChunkSize");
+    const reint = modal.querySelector("#configMaxReintentos");
+    const delay = modal.querySelector("#configDelay");
+    const autoR = modal.querySelector("#configAutoRetry");
+    chunk.addEventListener('input', e => modal.querySelector("#previewChunk").textContent = e.target.value);
+    reint.addEventListener('input', e => modal.querySelector("#previewReintentos").textContent = e.target.value);
+    delay.addEventListener('input', e => modal.querySelector("#previewDelay").textContent = e.target.value);
+
+    // Tips flotantes
+    const tip = modal.querySelector('#configTip');
+    [chunk, reint, delay, autoR].forEach(el => {
+        el.addEventListener('mouseenter', e => {
+            tip.textContent = el.dataset.tip;
+            tip.style.left = (el.getBoundingClientRect().left - modal.getBoundingClientRect().left + 40) + "px";
+            tip.style.top = (el.getBoundingClientRect().top - modal.getBoundingClientRect().top - 5) + "px";
+            tip.style.opacity = 1;
+        });
+        el.addEventListener('mouseleave', () => { tip.style.opacity = 0; });
+        el.addEventListener('focus', e => {
+            tip.textContent = el.dataset.tip;
+            tip.style.left = (el.getBoundingClientRect().left - modal.getBoundingClientRect().left + 40) + "px";
+            tip.style.top = (el.getBoundingClientRect().top - modal.getBoundingClientRect().top - 5) + "px";
+            tip.style.opacity = 1;
+        });
+        el.addEventListener('blur', () => { tip.style.opacity = 0; });
+    });
+
+    // Guardar configuración con animación de botón
     modal.querySelector('#guardarConfig').addEventListener('click', () => {
-        colaDescarga.configuracion.chunkSize = parseInt($("configChunkSize").value);
-        colaDescarga.configuracion.maxReintentos = parseInt($("configMaxReintentos").value);
-        colaDescarga.configuracion.delayInicial = parseInt($("configDelay").value);
-        colaDescarga.configuracion.autoRetry = $("configAutoRetry").checked;
-        
-        guardarColaEnLocalStorage();
-        mostrarPanelDescarga();
-        modalInstance.hide();
-        showToast('Configuración guardada', 'success');
+        const btn = modal.querySelector('#guardarConfig');
+        const icon = modal.querySelector('#guardarIcon');
+        icon.className = "fas fa-spinner fa-spin";
+        btn.setAttribute("disabled", true);
+
+        setTimeout(() => { // Simula guardado y UX
+            colaDescarga.configuracion.chunkSize = parseInt(chunk.value);
+            colaDescarga.configuracion.maxReintentos = parseInt(reint.value);
+            colaDescarga.configuracion.delayInicial = parseInt(delay.value);
+            colaDescarga.configuracion.autoRetry = autoR.checked;
+            guardarColaEnLocalStorage();
+            mostrarPanelDescarga();
+            icon.className = "fas fa-check";
+            showToast('¡Configuración guardada!', 'success');
+            setTimeout(() => modalInstance.hide(), 500);
+        }, 700);
     });
-    
+
+    // Limpia el modal del DOM al cerrarse
     modal.addEventListener('hidden.bs.modal', () => {
-        document.body.removeChild(modal);
+        modal.remove();
     });
-}
-
-async function reanudarDescarga() {
-    if (colaDescarga.enProceso || colaDescarga.pendientes.length === 0) return;
-    
-    colaDescarga.enProceso = true;
-    mostrarPanelDescarga();
-    
-    try {
-        await procesarColaDescarga();
-    } catch (error) {
-        showToast('Error en descarga: ' + error.message, 'danger');
-    } finally {
-        colaDescarga.enProceso = false;
-        mostrarPanelDescarga();
-        guardarColaEnLocalStorage();
-    }
-}
-
-function pausarDescarga() {
-    colaDescarga.enProceso = false;
-    mostrarPanelDescarga();
-    guardarColaEnLocalStorage();
-    showToast('Descarga pausada', 'info');
-}
-
-function cancelarDescarga() {
-    if (confirm('¿Está seguro de cancelar la descarga? Se perderá el progreso actual.')) {
-        colaDescarga.enProceso = false;
-        limpiarColaStorage();
-        document.getElementById('panelDescarga')?.remove();
-        showToast('Descarga cancelada', 'warning');
-    }
 }
 
 // ==============================
