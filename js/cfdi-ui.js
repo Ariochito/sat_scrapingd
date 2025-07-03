@@ -401,16 +401,7 @@ async function iniciarDescargaMasiva(uuids, formData, downloadType = 'xml') {
     }
 }
 
-async function descargarSeleccionados() {
-    const uuids = obtenerUuidsSeleccionados();
-    if (uuids.length === 0) {
-        showToast('Seleccione al menos un CFDI para descargar', "warning");
-        return;
-    }
-    
-    const downloadType = $("downloadType")?.value || 'xml';
-    await iniciarDescargaMasiva(uuids, obtenerDatosFormulario(), downloadType);
-}
+
 
 // ==============================
 // UTILIDADES GENERALES
