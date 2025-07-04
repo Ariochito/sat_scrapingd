@@ -1,4 +1,5 @@
 <?php
+
 use PhpCfdi\CfdiSatScraper\Filters\DownloadType;
 use PhpCfdi\CfdiSatScraper\Filters\Options\StatesVoucherOption;
 use PhpCfdi\CfdiSatScraper\Filters\Options\ComplementsOption;
@@ -6,14 +7,24 @@ use PhpCfdi\CfdiSatScraper\Filters\Options\RfcOption;
 use PhpCfdi\CfdiSatScraper\Filters\Options\RfcOnBehalfOption;
 use PhpCfdi\CfdiSatScraper\QueryByFilters;
 
-class FiltersHelper {
-    public static function get($data) {
+class FiltersHelper
+{
+    public static function get($data)
+    {
         $tipo = $data['tipo'] ?? 'emitidas';
         $fechaInicio = $fechaFin = '';
         if ($tipo === 'emitidas') {
             $fechaInicio = $data['fechaInicio'] ?? '';
-            $fechaFin = $data['fechaFin'] ?? '';
-            if (!$fechaInicio || !$fechaFin) Response::json(['error' => 'Indica fecha inicio y fin para emitidos'], 400);
+            $fechaFin = $data['fechaFin'] ?? ''; {
+                if (!$fechaInicio || !$fechaFin) Response::json(['error' => 'Indica fecha inicio y fin para emitidos'], 400);
+            }
+
+            $dtInicio = new DateTimeImmutable($fechaInicio);
+            $dtFin = new DateTimeImmutable($fechaFin);
+            $dias = $dtInicio->diff($dtFin)->days;
+            if ($dias > 365) {
+                Response::json(['error' => 'El rango de fechas para emitidas no debe ser mayor a 1 año (365 días).'], 400);
+            }
         } else {
             $mes = $data['mesPeriodo'] ?? '';
             $anio = $data['anioPeriodo'] ?? '';
@@ -26,10 +37,11 @@ class FiltersHelper {
         $rfcFiltro = trim($data['rfcFiltro'] ?? '');
         $rfcTerceros = trim($data['rfcTerceros'] ?? '');
         $downloadType = $data['downloadType'] ?? 'xml';
-        return compact('tipo','fechaInicio','fechaFin','estado','complemento','rfcFiltro','rfcTerceros','downloadType');
+        return compact('tipo', 'fechaInicio', 'fechaFin', 'estado', 'complemento', 'rfcFiltro', 'rfcTerceros', 'downloadType');
     }
 
-    public static function buildQuery($filtros) {
+    public static function buildQuery($filtros)
+    {
         extract($filtros);
         $query = new QueryByFilters(new DateTimeImmutable($fechaInicio), new DateTimeImmutable($fechaFin));
         $query->setDownloadType($tipo === 'recibidas' ? DownloadType::recibidos() : DownloadType::emitidos());

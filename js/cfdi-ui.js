@@ -1,6 +1,6 @@
 // cfdi-ui.js
 import { $, mostrarSpinner, debugLog, clearDebug, showToast } from './core.js';
-import { loginSat, logoutSat, statusSat, searchCfdi, downloadCfdi, retryPendingCfdi } from './cfdi-api.js';
+import { loginSat, logoutSat, statusSat, searchCfdi, retryPendingCfdi } from './cfdi-api.js';
 
 let satSessionErrorCount = 0;
 const SAT_SESSION_ERROR_MSG = "expected to have the session registered";
@@ -29,7 +29,8 @@ let colaDescarga = {
         maxReintentos: 5,
         delayInicial: 2000,
         autoRetry: true
-    }
+    },
+    filtrosOriginales: {}
 };
 
 // Al cargar, los botones deben estar todos deshabilitados, incluido logout
@@ -46,7 +47,8 @@ function guardarColaEnLocalStorage() {
     try {
         localStorage.setItem('cfdi_cola_descarga', JSON.stringify({
             cola: colaDescarga,
-            pendientes: pendientesDescarga
+            pendientes: pendientesDescarga,
+            filtrosOriginales: colaDescarga.filtrosOriginales
         }));
     } catch (e) {
         console.warn('No se pudo guardar la cola en localStorage:', e);
@@ -60,19 +62,23 @@ function cargarColaDeLocalStorage() {
             const data = JSON.parse(colaGuardada);
             const colaData = data.cola || {};
             const pendData = data.pendientes || [];
-            if (colaData.pendientes && colaData.pendientes.length > 0) {
-                colaDescarga = { ...colaDescarga, ...colaData };
-                pendientesDescarga = pendData;
-                pendData.forEach(u => pendientesSet.add(u));
-                mostrarPanelDescarga();
-                return true;
+            colaDescarga = { ...colaDescarga, ...colaData };
+            pendientesDescarga = pendData;
+            pendData.forEach(u => pendientesSet.add(u));
+            // Restaurar filtros originales:
+            if (data.filtrosOriginales) {
+                colaDescarga.filtrosOriginales = data.filtrosOriginales;
+                lastDownloadFormData = { ...data.filtrosOriginales };
             }
+            mostrarPanelDescarga();
+            return true;
         }
     } catch (e) {
         console.warn('Error al cargar cola de localStorage:', e);
     }
     return false;
 }
+
 
 function limpiarColaStorage() {
     localStorage.removeItem('cfdi_cola_descarga');
@@ -88,7 +94,8 @@ function limpiarColaStorage() {
             maxReintentos: 5,
             delayInicial: 2000,
             autoRetry: true
-        }
+        },
+        filtrosOriginales: {}
     };
     pendientesDescarga = [];
     pendientesSet.clear();
@@ -106,11 +113,11 @@ function mostrarPanelDescarga() {
         panel.className = 'card mt-3 border-primary';
         $("resultados").appendChild(panel);
     }
-    
+
     const porcentaje = colaDescarga.total > 0 ? Math.round((colaDescarga.descargados / colaDescarga.total) * 100) : 0;
-    const estado = colaDescarga.enProceso ? 'Descargando...' : 
-                  colaDescarga.pendientes.length === 0 ? 'Completado' : 'Pausado';
-    
+    const estado = colaDescarga.enProceso ? 'Descargando...' :
+        colaDescarga.pendientes.length === 0 ? 'Completado' : 'Pausado';
+
     panel.innerHTML = `
         <div class="card-header bg-primary text-white">
             <h6 class="mb-0">
@@ -170,7 +177,7 @@ function mostrarPanelDescarga() {
             ` : ''}
         </div>
     `;
-    
+
     // Agregar event listeners
     $("reanudarDescarga")?.addEventListener('click', reanudarDescarga);
     $("pausarDescarga")?.addEventListener('click', pausarDescarga);
@@ -367,9 +374,13 @@ async function procesarColaDescarga() {
         while (pendientesLote.length > 0 && intentosLote < 3) {
             intentosLote++;
             try {
+                const filtrosParaReintento = colaDescarga.filtrosOriginales && Object.keys(colaDescarga.filtrosOriginales).length
+                    ? colaDescarga.filtrosOriginales
+                    : lastDownloadFormData;
+
                 const response = await retryPendingCfdi(
                     pendientesLote,
-                    lastDownloadFormData,
+                    filtrosParaReintento,
                     lastDownloadType,
                     {
                         maxReintentos: colaDescarga.configuracion.maxReintentos,
@@ -377,6 +388,7 @@ async function procesarColaDescarga() {
                         delayInicial: colaDescarga.configuracion.delayInicial
                     }
                 );
+
 
                 if (response.error) {
                     if (await handleSatSessionError(response.error)) continue;
@@ -428,15 +440,15 @@ async function procesarColaDescarga() {
 // FUNCIONES DE DESCARGA MEJORADAS
 // ==============================
 
-async function iniciarDescargaMasiva(uuids, formData, downloadType = 'xml') {
+async function downloadCfdi(uuids, formData, downloadType = 'xml') {
     if (!sesionActiva) {
         showToast('Primero debe iniciar sesión en el SAT', "warning");
         return;
     }
-    
+
     // Filtrar los ya descargados
     const uuidsPendientes = uuids.filter(u => !descargadosSet.has(u));
-    
+
     if (uuidsPendientes.length === 0) {
         showToast('Todos estos CFDI ya fueron descargados', 'info');
         return;
@@ -451,15 +463,15 @@ async function iniciarDescargaMasiva(uuids, formData, downloadType = 'xml') {
     colaDescarga.pendientes = [...uuidsPendientes];
     colaDescarga.enProceso = true;
     colaDescarga.intentos = 0;
-    
-    lastDownloadFormData = formData;
-    lastDownloadType = downloadType;
-    
+
+    lastDownloadFormData = { ...formData };
+    colaDescarga.filtrosOriginales = { ...formData };
+
     guardarColaEnLocalStorage();
     mostrarPanelDescarga();
-    
+
     showToast(`Iniciando descarga de ${uuidsPendientes.length} archivos...`, 'info');
-    
+
     try {
         await procesarColaDescarga();
     } catch (error) {
@@ -493,15 +505,51 @@ function obtenerDatosFormulario() {
     } else {
         data.fechaInicio = $("fechaInicio").value;
         data.fechaFin = $("fechaFin").value;
+        if (data.fechaInicio && data.fechaFin) {
+            const dias = diasEntreFechas(data.fechaInicio, data.fechaFin);
+            if (dias > 365) {
+                showToast(
+                    'Por disposición del SAT, el rango máximo para búsqueda de CFDI emitidos es de 1 año (365 días).<br><br>' +
+                    'Por favor, selecciona un rango menor.<br><br>' +
+                    '<b>Tip:</b> Si necesitas varios años, haz consultas separadas por año o periodos menores.',
+                    'warning'
+                );
+                return null; // <--- Cambia throw por return null
+            }
+        }
     }
     return data;
 }
+
 
 function diasEntreFechas(fechaInicio, fechaFin) {
     const d1 = new Date(fechaInicio);
     const d2 = new Date(fechaFin);
     return Math.floor((d2 - d1) / (1000 * 60 * 60 * 24)) + 1;
 }
+
+$("fechaInicio").addEventListener('change', validarRangoEmitidas);
+$("fechaFin").addEventListener('change', validarRangoEmitidas);
+
+function validarRangoEmitidas() {
+    const tipo = $("tipo").value;
+    if (tipo !== 'emitidas') return;
+    const fechaInicio = $("fechaInicio").value;
+    const fechaFin = $("fechaFin").value;
+    if (fechaInicio && fechaFin) {
+        const dias = diasEntreFechas(fechaInicio, fechaFin);
+        if (dias > 365) {
+            showToast(
+                'Por disposición del SAT, el rango máximo para búsqueda de CFDI emitidos es de 1 año (365 días).<br><br>' +
+                'Por favor, selecciona un rango menor.<br><br>' +
+                '<b>Tip:</b> Si necesitas varios años, haz consultas separadas por año o periodos menores.',
+                'warning'
+            );
+            $("fechaFin").value = ""; // Opcional: borra la fecha para forzar corrección
+        }
+    }
+}
+
 
 function sleep(ms) {
     return new Promise(res => setTimeout(res, ms));
@@ -681,7 +729,7 @@ function mostrarResultados(data) {
                 : mostrarDato(null, "Total no disponible");
 
             const rowClass = descargadosSet.has(cfdi.uuid) ? 'table-success' :
-                              (pendientesSet.has(cfdi.uuid) ? 'table-warning' : '');
+                (pendientesSet.has(cfdi.uuid) ? 'table-warning' : '');
 
             html += `
                 <tr data-uuid="${cfdi.uuid}" class="${rowClass}">
@@ -918,7 +966,7 @@ async function buscarEnChunksPorDias(formData, diasPorChunk = 7, maxReintentos =
 }
 
 async function descargarEnChunks(uuids, formData, chunkSize = 50) {
-     uuids = uuids.filter(u => !descargadosSet.has(u));
+    uuids = uuids.filter(u => !descargadosSet.has(u));
     if (uuids.length === 0) {
         showToast('No hay CFDI nuevos para descargar', 'info');
         return;
@@ -970,7 +1018,7 @@ async function buscarYDescargarEnChunksPorDias(data, diasPorChunk = 7, reintento
         if (allCfdis.length > 0 && confirm(`¿Desea descargar todos los ${allCfdis.length} CFDI encontrados?`)) {
             const uuids = allCfdis.map(cfdi => cfdi.uuid);
             const downloadType = data.downloadType || 'xml';
-            await iniciarDescargaMasiva(uuids, data, downloadType);
+            await downloadCfdi(uuids, data, downloadType);
         }
 
     } catch (e) {
@@ -985,7 +1033,7 @@ async function buscarYDescargarEnChunksPorDias(data, diasPorChunk = 7, reintento
 async function reintentarFaltantes() {
     if (pendientesDescarga.length > 0) {
         const uuids = [...pendientesDescarga];
-        await iniciarDescargaMasiva(uuids, lastDownloadFormData, lastDownloadType);
+        await downloadCfdi(uuids, lastDownloadFormData, lastDownloadType);
         pendientesDescarga = [];
         pendientesSet.clear();
     }
@@ -1004,7 +1052,7 @@ async function descargarSeleccionados() {
 // Función legacy actualizada para usar el nuevo sistema
 async function realizarDescarga(uuids, formData) {
     const downloadType = $("downloadType")?.value || 'xml';
-    await iniciarDescargaMasiva(uuids, formData, downloadType);
+    await downloadCfdi(uuids, formData, downloadType);
 }
 
 // ==============================
@@ -1044,7 +1092,7 @@ async function handleSatSessionError(errorMsg, retryCallback) {
         } catch (e) {
             showToast("Error al reingresar al SAT: " + e.message, "warning");
         }
-         satSessionErrorCount = SAT_SESSION_MAX_RETRIES;
+        satSessionErrorCount = SAT_SESSION_MAX_RETRIES;
         return true;
     }
     showToast("La sesión del SAT expiró. Ingresa nuevamente tus credenciales.", "danger");
@@ -1060,6 +1108,7 @@ async function handleSatSessionError(errorMsg, retryCallback) {
 $("buscarBtn").onclick = async () => {
     if (!sesionActiva) return showToast('Primero debe iniciar sesión en el SAT', "warning");
     const data = obtenerDatosFormulario();
+    if (!data) return;
     mostrarSpinner(true);
     mostrarBarraBusqueda();
     try {
@@ -1096,7 +1145,7 @@ $("descargarTodosBtn").onclick = async () => {
     if (!confirm(`¿Desea descargar todos los ${metadatosCFDI.length} CFDI encontrados?`)) return;
     const uuids = metadatosCFDI.map(cfdi => cfdi.uuid);
     const downloadType = $("downloadType")?.value || 'xml';
-    await iniciarDescargaMasiva(uuids, obtenerDatosFormulario(), downloadType);
+    await downloadCfdi(uuids, obtenerDatosFormulario(), downloadType);
 };
 
 
@@ -1130,7 +1179,7 @@ $("buscarDescargarBtn").onclick = async () => {
         if (metadatosCFDI.length > 0 && confirm(`¿Desea descargar todos los ${metadatosCFDI.length} CFDI encontrados?`)) {
             const uuids = metadatosCFDI.map(cfdi => cfdi.uuid);
             const downloadType = $("downloadType")?.value || 'xml';
-            await iniciarDescargaMasiva(uuids, data, downloadType);
+            await downloadCfdi(uuids, data, downloadType);
         }
     } catch (e) {
         $("resultados").innerHTML = `<div class="alert alert-danger">Error: ${e.message}</div>`;
