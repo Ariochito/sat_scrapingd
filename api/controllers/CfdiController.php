@@ -125,7 +125,7 @@ class CfdiController
             $descargadosEnIntento = [];
 
             foreach ($chunks as $chunkIndex => $chunk) {
-                Logger::info("Intentando descargar UUIDs:", array_map(fn($c)=>$c->uuid(), $chunk));
+                Logger::info("Intentando descargar UUIDs:", array_map(fn($c) => $c->uuid(), $chunk));
                 try {
                     $downloadList = new MetadataList($chunk);
                     Logger::info("MetadataList armado para descarga");
@@ -138,7 +138,7 @@ class CfdiController
                     $resultados = $satScraper->resourceDownloader($resourceType, $downloadList)
                         ->setConcurrency($chunkSize)
                         ->saveTo(DESCARGA_PATH, true, 0777);
-                        Logger::info("Resultado de descarga:", $resultados);
+                    Logger::info("Resultado de descarga:", $resultados);
 
                     $descargadosEnIntento = array_merge($descargadosEnIntento, $resultados);
 
@@ -339,4 +339,6 @@ class CfdiController
 
         return new SatScraper($sessionManager, $gateway, $metadataHandler);
     }
+
+
 }
